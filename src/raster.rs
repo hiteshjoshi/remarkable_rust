@@ -35,8 +35,10 @@ fn fontdb() -> Arc<Fontdb> {
 /// Rasterize an SVG string to PNG bytes. Returns an error if the SVG fails
 /// to parse or if pixmap allocation fails (e.g. zero-sized).
 pub fn svg_to_png(svg: &str) -> Result<Vec<u8>> {
-    let mut opt = usvg::Options::default();
-    opt.fontdb = fontdb();
+    let opt = usvg::Options {
+        fontdb: fontdb(),
+        ..usvg::Options::default()
+    };
 
     let tree =
         usvg::Tree::from_str(svg, &opt).map_err(|e| Error::Convert(format!("svg parse: {e}")))?;

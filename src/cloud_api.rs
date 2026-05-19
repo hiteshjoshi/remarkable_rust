@@ -3,14 +3,13 @@
 //! This is the *high-level* cloud API the official Read-on-reMarkable Chrome
 //! extension uses (see `docs/protocol/`):
 //!
-//! - `POST /doc/v2/files`     — upload as native EPUB document
-//! - `POST /import/v1/files`  — upload + server-side conversion to a
-//!                              **native reMarkable notebook** (.rm). This
-//!                              is the path we use by default.
-//! - `POST /doc/v2/files` (Content-Type: folder) — create folder
-//! - `GET  /doc/v2/files`     — list
-//! - `DELETE /doc/v2/files`   — multi-delete by hash
-//! - `PATCH /doc/v2/files`    — rename / move / pin
+//! - `POST /doc/v2/files` — upload as native EPUB document.
+//! - `POST /import/v1/files` — upload + server-side conversion to a
+//!   **native reMarkable notebook** (.rm). The default path.
+//! - `POST /doc/v2/files` with `Content-Type: folder` — create folder.
+//! - `GET /doc/v2/files` — list.
+//! - `DELETE /doc/v2/files` — multi-delete by hash.
+//! - `PATCH /doc/v2/files` — rename / move / pin.
 //!
 //! All endpoints share three custom headers: `Authorization`, `rM-Source`,
 //! `rM-Meta` (a base64 JSON blob carrying file metadata).

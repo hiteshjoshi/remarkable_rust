@@ -386,13 +386,12 @@ async fn handle_upload(
     if !item.id.is_empty() {
         println!("  ID:   {}", item.id);
     }
-    println!(
-        "  Name: {}",
-        item.file_name
-            .is_empty()
-            .then(|| title.as_str())
-            .unwrap_or(&item.file_name)
-    );
+    let displayed_name = if item.file_name.is_empty() {
+        title.as_str()
+    } else {
+        &item.file_name
+    };
+    println!("  Name: {}", displayed_name);
     if let Some(p) = item.parent.as_deref() {
         println!("  Parent: {p}");
     }
@@ -451,7 +450,7 @@ async fn handle_ls(folders_only: bool) -> Result<()> {
         return Ok(());
     }
     println!();
-    println!("{:<38} {:<18} {}", "ID", "Type", "Name");
+    println!("{:<38} {:<18} Name", "ID", "Type");
     println!("{}", "-".repeat(80));
     for f in &files {
         let icon = if f.file_type == "CollectionType" {
@@ -566,8 +565,8 @@ fn handle_jobs() -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<22} {:<10} {:<10} {:<8} {}",
-        "ID", "KIND", "STATUS", "EXIT", "STARTED"
+        "{:<22} {:<10} {:<10} {:<8} STARTED",
+        "ID", "KIND", "STATUS", "EXIT"
     );
     for j in jobs {
         let status = match j.status {

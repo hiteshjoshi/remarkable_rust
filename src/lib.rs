@@ -6,12 +6,19 @@
 
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
-#![warn(clippy::all, clippy::pedantic)]
+// Keep clippy::all (correctness, suspicious, style, complexity, perf) as the
+// CI gate. clippy::pedantic is intentionally NOT enabled — it's opinion-heavy
+// (must-use-candidate on every public fn, uninlined format args everywhere,
+// debug-vs-display on PathBuf, etc.) and would produce hundreds of stylistic
+// nits without catching real bugs.
+#![warn(clippy::all)]
 #![allow(
     clippy::module_name_repetitions,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    // Cosmetic: `"{}", name` is just as clear as `"{name}"`. Not worth the churn.
+    clippy::uninlined_format_args
 )]
 
 pub mod cli;
