@@ -29,6 +29,17 @@ executors:
     resource_class: large
 
 commands:
+  update_rust:
+    description: "Bring the rustup-managed stable toolchain up to date."
+    steps:
+      - run:
+          name: rustup update stable
+          command: |
+            set -eu
+            rustup update stable
+            rustup default stable
+            rustc --version
+
   cargo_cache_restore:
     description: "Restore cargo registry + build cache, keyed on Cargo.lock."
     steps:
@@ -95,6 +106,7 @@ jobs:
     executor: rust-linux
     steps:
       - checkout
+      - update_rust
       - run:
           name: rustfmt --check
           command: |
@@ -105,6 +117,7 @@ jobs:
     executor: rust-linux
     steps:
       - checkout
+      - update_rust
       - cargo_cache_restore
       - run:
           name: clippy
@@ -117,6 +130,7 @@ jobs:
     executor: rust-linux
     steps:
       - checkout
+      - update_rust
       - cargo_cache_restore
       - run:
           name: cargo test
@@ -148,6 +162,7 @@ jobs:
     executor: rust-linux
     steps:
       - checkout
+      - update_rust
       # zig + cargo-zigbuild let us cross-compile aarch64-linux from x86_64
       # without a separate ARM runner or apt-install gcc-aarch64.
       - run:
@@ -158,9 +173,7 @@ jobs:
             curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
               | tar -xJ -C "$HOME"
             echo "export PATH=\"$HOME/zig-linux-x86_64-${ZIG_VERSION}:\$PATH\"" >> "$BASH_ENV"
-            # Pin to the 0.20 series — cargo-zigbuild 0.22+ requires
-            # rustc 1.88, but cimg/rust:1.82 (this image) ships 1.82.
-            cargo install --locked cargo-zigbuild --version "^0.20.1"
+            cargo install --locked cargo-zigbuild
       - install_rust_target: { target: x86_64-unknown-linux-gnu }
       - install_rust_target: { target: aarch64-unknown-linux-gnu }
       - package_target:
@@ -178,7 +191,7 @@ jobs:
     steps:
       - checkout
       - attach_workspace: { at: dist }
-      - gh/setup    # uses $GITHUB_TOKEN from the context
+      - gh/setup    # uses $GITHUB_TOKEN from the rr-release context
       - run:
           name: combine checksums
           command: |
