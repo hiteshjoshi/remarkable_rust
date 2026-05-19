@@ -1,0 +1,163 @@
+# CircleCI release pipeline.
+#
+# Triggers on tag push (v*) only. Builds four release targets in two jobs
+# (macOS M1 covers both Apple targets natively; Linux x86_64 covers both
+# Linux targets via cargo-zigbuild), then publishes a GitHub release.
+#
+# One-time setup:
+#   1. Connect this repo on https://app.circleci.com (free plan is fine).
+#   2. Create a fine-grained GitHub PAT with `contents:write` on the repo.
+#   3. Add it to CircleCI as `GITHUB_TOKEN` under either the project's env
+#      vars or a context named `rr-release` (this file uses a context).
+
+version: 2.1
+
+orbs:
+  gh: circleci/github-cli@2.3.0
+
+executors:
+  rust-mac:
+    macos:
+      xcode: "15.4.0"
+    resource_class: macos.m1.medium.gen1
+
+  rust-linux:
+    docker:
+      - image: cimg/rust:1.82
+    resource_class: large
+
+commands:
+  install_rust_target:
+    parameters:
+      target: { type: string }
+    steps:
+      - run:
+          name: rustup add target << parameters.target >>
+          command: rustup target add << parameters.target >>
+
+  package_target:
+    description: "Build, tarball, and checksum a single release target."
+    parameters:
+      target: { type: string }
+      builder:
+        type: string
+        default: cargo  # cargo | zigbuild
+    steps:
+      - run:
+          name: build << parameters.target >>
+          command: |
+            set -eu
+            if [ "<< parameters.builder >>" = "zigbuild" ]; then
+              cargo zigbuild --release --locked --target << parameters.target >>
+            else
+              cargo build --release --locked --target << parameters.target >>
+            fi
+      - run:
+          name: package << parameters.target >>
+          command: |
+            set -eu
+            stage="rr-<< parameters.target >>"
+            mkdir -p "dist/$stage"
+            cp "target/<< parameters.target >>/release/rr" "dist/$stage/"
+            cp -r skills "dist/$stage/"
+            [ -f README.md ] && cp README.md "dist/$stage/" || true
+            [ -f docs/formatting-guide.md ] && cp docs/formatting-guide.md "dist/$stage/" || true
+            tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+            rm -rf "dist/$stage"
+            if command -v sha256sum >/dev/null 2>&1; then
+              (cd dist && sha256sum "$stage.tar.gz" > "$stage.tar.gz.sha256")
+            else
+              (cd dist && shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256")
+            fi
+
+jobs:
+  build_macos:
+    executor: rust-mac
+    steps:
+      - checkout
+      - run:
+          name: install rust
+          command: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal
+            echo 'source $HOME/.cargo/env' >> "$BASH_ENV"
+      - install_rust_target: { target: aarch64-apple-darwin }
+      - install_rust_target: { target: x86_64-apple-darwin }
+      - package_target: { target: aarch64-apple-darwin }
+      - package_target: { target: x86_64-apple-darwin }
+      - persist_to_workspace:
+          root: dist
+          paths: ["*"]
+
+  build_linux:
+    executor: rust-linux
+    steps:
+      - checkout
+      # zig + cargo-zigbuild let us cross-compile aarch64-linux from x86_64
+      # without a separate ARM runner or apt-install gcc-aarch64.
+      - run:
+          name: install zig + cargo-zigbuild
+          command: |
+            set -eu
+            ZIG_VERSION=0.13.0
+            curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+              | tar -xJ -C "$HOME"
+            echo "export PATH=\"$HOME/zig-linux-x86_64-${ZIG_VERSION}:\$PATH\"" >> "$BASH_ENV"
+            cargo install --locked cargo-zigbuild
+      - install_rust_target: { target: x86_64-unknown-linux-gnu }
+      - install_rust_target: { target: aarch64-unknown-linux-gnu }
+      - package_target:
+          target: x86_64-unknown-linux-gnu
+          builder: zigbuild
+      - package_target:
+          target: aarch64-unknown-linux-gnu
+          builder: zigbuild
+      - persist_to_workspace:
+          root: dist
+          paths: ["*"]
+
+  publish:
+    executor: rust-linux
+    steps:
+      - checkout
+      - attach_workspace: { at: dist }
+      - gh/setup    # uses $GITHUB_TOKEN from the context
+      - run:
+          name: combine checksums
+          command: |
+            set -eu
+            cd dist
+            : > SHA256SUMS
+            for f in *.sha256; do cat "$f" >> SHA256SUMS; done
+            ls -la
+      - run:
+          name: publish release ${CIRCLE_TAG}
+          command: |
+            set -eu
+            if gh release view "$CIRCLE_TAG" >/dev/null 2>&1; then
+              gh release upload "$CIRCLE_TAG" \
+                dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS --clobber
+            else
+              gh release create "$CIRCLE_TAG" \
+                --title "rr $CIRCLE_TAG" \
+                --generate-notes \
+                dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS
+            fi
+
+workflows:
+  release:
+    jobs:
+      - build_macos:
+          filters:
+            tags:     { only: /^v.+/ }
+            branches: { ignore: /.*/ }
+      - build_linux:
+          filters:
+            tags:     { only: /^v.+/ }
+            branches: { ignore: /.*/ }
+      - publish:
+          requires: [build_macos, build_linux]
+          context: rr-release
+          filters:
+            tags:     { only: /^v.+/ }
+            branches: { ignore: /.*/ }
