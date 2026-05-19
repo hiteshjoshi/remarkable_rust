@@ -257,29 +257,46 @@ same turn, omit `--background` — it returns the document id directly.
 
 ---
 
-## XHTML input — when markdown isn't enough
+## Choosing markdown vs XHTML — the rule
 
-If you need layout that markdown can't express (custom typography,
-specific section headers, mixed-format pages), generate an XHTML file
-directly:
+This is important and easy to get wrong.
+
+**If the document contains any tabular data, write markdown.** The
+rasterizer that turns tables into PNGs only fires on markdown table
+syntax (`| col | col |`). XHTML `<table>` tags are passed through
+verbatim and the cloud converter flattens them to broken pipe-text on
+the device.
+
+**Use XHTML only when the document has no tables** but needs structure
+markdown can't express (specific section headers, custom typography,
+hand-laid layouts). XHTML input bypasses the markdown pipeline entirely,
+including the table rasterizer.
+
+Quick decision tree:
+
+- Summary, report, notes, research, anything with rows of data → **markdown**.
+- Pure prose with bespoke layout, no tables → XHTML is fine.
+- Mix of prose and tables → markdown (you can still use raw HTML inline
+  for things markdown can't express, except for tables which must use
+  markdown syntax).
 
 ```bash
-rr upload report.html       # .html, .xhtml, .htm all accepted
+rr upload report.md          # markdown path — tables auto-rasterize
+rr upload report.html        # XHTML path — no table rasterization
 ```
 
-XHTML rules:
+XHTML rules (when you do use it):
 
 - The `<body>` content is extracted automatically; you can ship a full
   document or just a fragment.
 - `<title>` populates the document title (unless `--title` overrides).
 - `<meta name="author/description/lang/source" …>` populates EPUB metadata.
-- **Don't bother with `<svg>`** — it gets stripped. Generate PNGs and
-  reference them via `<img src="local.png">`.
+- **Don't use `<table>`** — it will be flattened by the cloud. If you
+  need a table, switch the whole document to markdown.
+- **Don't bother with `<svg>`** — it gets stripped. Generate PNGs
+  yourself and reference them via `<img src="local.png">`.
 - **Don't bother with custom `<style>`** — almost no CSS survives the
   converter.
-
-Use this path when the user wants a structured artifact (like a Claude
-artifact) rather than free-flowing prose.
 
 ---
 
