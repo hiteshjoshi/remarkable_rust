@@ -19,7 +19,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const APP_NAME: &str = "rr";
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const KEYRING_SERVICE: &str = "rr";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const KEYRING_USER: &str = "remarkable_token";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -123,12 +126,26 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(base.join(APP_NAME).join("config.toml"))
 }
 
+// OS-keyring mirror of the user token. macOS uses the Keychain, Windows
+// uses Credential Manager. On Linux we deliberately skip this: the
+// available backends pull in either libdbus or libkeyutils, which is
+// painful to satisfy inside a static cross-compile. The TOML config file
+// remains the source of truth on every platform — keyring is just an
+// extra layer where it's cheap.
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn store_token_secure(token: &str) -> Result<()> {
     let entry =
         keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("create keyring entry")?;
     entry.set_password(token).context("set keyring password")
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn store_token_secure(_token: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn get_token_secure() -> Result<Option<String>> {
     let entry =
         keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("create keyring entry")?;
@@ -139,6 +156,12 @@ pub fn get_token_secure() -> Result<Option<String>> {
     }
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn get_token_secure() -> Result<Option<String>> {
+    Ok(None)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn delete_token_secure() -> Result<()> {
     let entry =
         keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("create keyring entry")?;
@@ -147,6 +170,11 @@ pub fn delete_token_secure() -> Result<()> {
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(anyhow::anyhow!("keyring delete: {e}")),
     }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn delete_token_secure() -> Result<()> {
+    Ok(())
 }
 
 /// Parse the `exp` claim from a JWT without verification.

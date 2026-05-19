@@ -25,7 +25,6 @@ crc32c = "0.6"
 dirs = "5.0"
 futures = "0.3"
 hex = "0.4"
-keyring = { version = "3", features = ["sync-secret-service", "apple-native"] }
 pulldown-cmark = "0.12"
 resvg = { version = "0.44", default-features = false, features = ["text"] }
 tiny-skia = "0.11"
@@ -46,6 +45,16 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.10"
+
+# Keyring lives on macOS + Windows only. Linux would pull libdbus-sys
+# (via `sync-secret-service`) or libkeyutils (via `linux-native`), both
+# of which need system dev packages — awkward inside a cargo-zigbuild
+# cross-build. The TOML config file stays the source of truth on Linux.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
 [profile.release]
 opt-level = 3
