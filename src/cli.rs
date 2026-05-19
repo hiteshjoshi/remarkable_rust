@@ -497,7 +497,7 @@ async fn handle_rm(id: String) -> Result<()> {
         bail!("server returned no hash for {id}; cannot delete");
     }
     client
-        .delete_many(&[target.hash.clone()])
+        .delete_many(std::slice::from_ref(&target.hash))
         .await
         .map_err(map_rr_err)?;
     println!("{} Deleted '{}' ({})", "✓".green(), target.file_name, id);
