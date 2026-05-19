@@ -156,6 +156,12 @@ main() {
         info "Development mode: installing from local build"
         
         local repo_dir
+        # `--dev` only makes sense when the script lives on disk; under
+        # `curl|bash` BASH_SOURCE[0] is unset, so fail with a clear message
+        # rather than crashing on `set -u`.
+        if [ -z "${BASH_SOURCE[0]:-}" ]; then
+            error "--dev requires a local checkout; clone the repo and run ./install.sh --dev"
+        fi
         repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         local binary_source="$repo_dir/target/release/rr"
         
@@ -269,7 +275,8 @@ main() {
     fi
 }
 
-# Run main if script is executed directly
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+# Run main if script is executed directly (or piped, e.g. via curl|bash).
+# Note: under `set -u`, an unset BASH_SOURCE element is fatal, so default it.
+if [ "${BASH_SOURCE[0]:-}" = "${0}" ] || [ -z "${BASH_SOURCE[0]:-}" ]; then
     main "$@"
 fi

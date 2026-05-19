@@ -17,14 +17,20 @@ Claude, OpenCode, and Codex.
 ## The agent flow (this is the main use case)
 
 ```bash
-# 1. Install the binary + agent skills (no Rust needed)
+# 1. Install the binary + agent SKILL files (no Rust needed)
 curl -fsSL https://raw.githubusercontent.com/hiteshjoshi/remarkable_rust/main/install.sh | bash
 
 # 2. Pair with reMarkable (one-time, browser-based)
 rr auth
 
-# 3. Just ask your agent.
+# 3. Restart Claude / OpenCode / Codex so it picks up the new skill.
+
+# 4. Just ask your agent.
 ```
+
+If you skip step 3 the agent won't know the skill exists and will
+default to its usual behaviour. Restart the agent process (close and
+reopen the CLI / app) and you're good.
 
 In Claude / OpenCode / Codex, things like:
 
