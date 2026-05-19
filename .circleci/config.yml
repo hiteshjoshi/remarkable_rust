@@ -1,14 +1,16 @@
-# CircleCI release pipeline.
+# CircleCI pipelines.
 #
-# Triggers on tag push (v*) only. Builds four release targets in two jobs
-# (macOS M1 covers both Apple targets natively; Linux x86_64 covers both
-# Linux targets via cargo-zigbuild), then publishes a GitHub release.
+# Two workflows:
+#   - `ci`      runs on every push to any branch (no tags). Format check,
+#               clippy, and tests on Linux. Cheap, fast feedback.
+#   - `release` runs only on tag push (v*). Builds all four targets and
+#               publishes a GitHub release with attached tarballs.
 #
-# One-time setup:
+# One-time setup (for releases):
 #   1. Connect this repo on https://app.circleci.com (free plan is fine).
 #   2. Create a fine-grained GitHub PAT with `contents:write` on the repo.
-#   3. Add it to CircleCI as `GITHUB_TOKEN` under either the project's env
-#      vars or a context named `rr-release` (this file uses a context).
+#   3. Add it to CircleCI as `GITHUB_TOKEN` inside a context named
+#      `rr-release` (referenced by the publish job).
 
 version: 2.1
 
@@ -27,6 +29,24 @@ executors:
     resource_class: large
 
 commands:
+  cargo_cache_restore:
+    description: "Restore cargo registry + build cache, keyed on Cargo.lock."
+    steps:
+      - restore_cache:
+          keys:
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
+
+  cargo_cache_save:
+    description: "Save cargo registry + build cache."
+    steps:
+      - save_cache:
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - target
+
   install_rust_target:
     parameters:
       target: { type: string }
@@ -71,6 +91,41 @@ commands:
             fi
 
 jobs:
+  check_fmt:
+    executor: rust-linux
+    steps:
+      - checkout
+      - run:
+          name: rustfmt --check
+          command: |
+            rustup component add rustfmt
+            cargo fmt --all -- --check
+
+  check_clippy:
+    executor: rust-linux
+    steps:
+      - checkout
+      - cargo_cache_restore
+      - run:
+          name: clippy
+          command: |
+            rustup component add clippy
+            cargo clippy --all-targets --locked -- -D warnings
+      - cargo_cache_save
+
+  test_linux:
+    executor: rust-linux
+    steps:
+      - checkout
+      - cargo_cache_restore
+      - run:
+          name: cargo test
+          command: cargo test --locked --all-targets
+      - run:
+          name: cargo build --release
+          command: cargo build --locked --release
+      - cargo_cache_save
+
   build_macos:
     executor: rust-mac
     steps:
@@ -145,6 +200,21 @@ jobs:
             fi
 
 workflows:
+  ci:
+    jobs:
+      - check_fmt:
+          filters:
+            branches: { only: /.*/ }
+            tags:     { ignore: /.*/ }
+      - check_clippy:
+          filters:
+            branches: { only: /.*/ }
+            tags:     { ignore: /.*/ }
+      - test_linux:
+          filters:
+            branches: { only: /.*/ }
+            tags:     { ignore: /.*/ }
+
   release:
     jobs:
       - build_macos:
