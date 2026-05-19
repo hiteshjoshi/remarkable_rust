@@ -1,1 +1,13 @@
-target
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Local config / state
+.env
+.env.local
+
+# Reverse-engineering scratch: never commit upstream code we didn't author
+docs/protocol/extension-*.ts
+docs/protocol/extension-*.js
+docs/protocol/*.recovered.*
+/tmp_*

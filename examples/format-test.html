@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>rr format test round 3 — XHTML + SVG</title>
+<meta name="author" content="rr"/>
+<meta name="description" content="Round 3 — XHTML input with inline SVG to test rich layouts."/>
+</head>
+<body>
+
+<h1>Round 3 — XHTML + inline SVG</h1>
+
+<p>This document is plain XHTML, not markdown. The CLI now accepts
+<code>.html</code> / <code>.xhtml</code> directly, so agents can emit rich
+layouts without going through markdown's narrow lens. The big question this
+round answers: does the cloud's EPUB→notebook converter render inline
+SVG, and if so, can we use SVG to draw the structured layouts (tables,
+icons, simple diagrams) that markdown can't.</p>
+
+<hr/>
+
+<h2>1. Inline SVG — small icons</h2>
+
+<p>Four 32×32 monochrome icons rendered as inline SVG paths:</p>
+
+<p>
+  <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+    <line x1="3" y1="9" x2="21" y2="9"/>
+  </svg>
+  &nbsp; box-with-bar
+  &nbsp; &nbsp;
+  <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>
+  &nbsp; checkmark
+  &nbsp; &nbsp;
+  <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <line x1="12" y1="8" x2="12" y2="12"/>
+    <line x1="12" y1="16" x2="12.01" y2="16"/>
+  </svg>
+  &nbsp; alert
+  &nbsp; &nbsp;
+  <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+  </svg>
+  &nbsp; star
+</p>
+
+<hr/>
+
+<h2>2. Tables drawn as SVG</h2>
+
+<p>This is the most important test: a real table grid drawn as SVG, with
+visible borders, headers, and right-aligned numbers. If this renders, agents
+can produce print-quality tables on the device.</p>
+
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="180" viewBox="0 0 600 180" font-family="serif" font-size="18">
+  <!-- outer border -->
+  <rect x="1" y="1" width="598" height="178" fill="none" stroke="black" stroke-width="2"/>
+  <!-- vertical separators -->
+  <line x1="220" y1="1"   x2="220" y2="179" stroke="black" stroke-width="1"/>
+  <line x1="400" y1="1"   x2="400" y2="179" stroke="black" stroke-width="1"/>
+  <!-- header underline -->
+  <line x1="1"   y1="44"  x2="599" y2="44"  stroke="black" stroke-width="2"/>
+  <!-- row separators -->
+  <line x1="1"   y1="88"  x2="599" y2="88"  stroke="black" stroke-width="0.5"/>
+  <line x1="1"   y1="132" x2="599" y2="132" stroke="black" stroke-width="0.5"/>
+  <!-- header row (bold) -->
+  <text x="20"  y="30" font-weight="bold">Item</text>
+  <text x="240" y="30" font-weight="bold">Quantity</text>
+  <text x="420" y="30" font-weight="bold">Price</text>
+  <!-- data rows -->
+  <text x="20"  y="74">Pens</text>
+  <text x="380" y="74" text-anchor="end">3</text>
+  <text x="580" y="74" text-anchor="end">$4.50</text>
+  <text x="20"  y="118">Pads</text>
+  <text x="380" y="118" text-anchor="end">1</text>
+  <text x="580" y="118" text-anchor="end">$12</text>
+  <text x="20"  y="162">Tags</text>
+  <text x="380" y="162" text-anchor="end">24</text>
+  <text x="580" y="162" text-anchor="end">$0.05</text>
+</svg>
+
+<hr/>
+
+<h2>3. Simple diagram — pipeline boxes + arrows</h2>
+
+<p>An SVG block diagram of the upload pipeline:</p>
+
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="160" viewBox="0 0 640 160" font-family="sans-serif" font-size="16">
+  <!-- box: markdown -->
+  <rect x="10"  y="40" width="140" height="60" rx="6" fill="white" stroke="black" stroke-width="2"/>
+  <text x="80"  y="76" text-anchor="middle">markdown</text>
+  <!-- arrow -->
+  <line x1="150" y1="70" x2="200" y2="70" stroke="black" stroke-width="2"/>
+  <polygon points="200,64 212,70 200,76" fill="black"/>
+  <!-- box: EPUB -->
+  <rect x="212" y="40" width="140" height="60" rx="6" fill="white" stroke="black" stroke-width="2"/>
+  <text x="282" y="76" text-anchor="middle">EPUB (zip)</text>
+  <!-- arrow -->
+  <line x1="352" y1="70" x2="402" y2="70" stroke="black" stroke-width="2"/>
+  <polygon points="402,64 414,70 402,76" fill="black"/>
+  <!-- box: cloud -->
+  <rect x="414" y="40" width="140" height="60" rx="6" fill="white" stroke="black" stroke-width="2"/>
+  <text x="484" y="76" text-anchor="middle">cloud convert</text>
+  <!-- arrow -->
+  <line x1="554" y1="70" x2="604" y2="70" stroke="black" stroke-width="2"/>
+  <polygon points="604,64 616,70 604,76" fill="black"/>
+  <!-- terminal text -->
+  <text x="616" y="76" text-anchor="end">notebook</text>
+</svg>
+
+<hr/>
+
+<h2>4. Mixed: bullet records (the winner from round 2) for comparison</h2>
+
+<ul>
+  <li><strong>Pens</strong> — qty 3 at $4.50</li>
+  <li><strong>Pads</strong> — qty 1 at $12</li>
+  <li><strong>Tags</strong> — qty 24 at $0.05</li>
+</ul>
+
+<hr/>
+
+<h2>5. Definition list (HTML &lt;dl&gt;) for comparison</h2>
+
+<dl>
+  <dt><strong>Tectonic</strong></dt>
+  <dd>Per-region cloud shard.</dd>
+  <dt><strong>Wire format</strong></dt>
+  <dd>EPUB bytes posted to /import/v1/files.</dd>
+  <dt><strong>Convert flag</strong></dt>
+  <dd>rM-Meta.convert=true asks the cloud for a native notebook.</dd>
+</dl>
+
+<hr/>
+
+<h2>6. Inline SVG &mdash; section divider</h2>
+
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="20" viewBox="0 0 600 20">
+  <line x1="0" y1="10" x2="270" y2="10" stroke="black" stroke-width="1"/>
+  <circle cx="300" cy="10" r="4" fill="black"/>
+  <line x1="330" y1="10" x2="600" y2="10" stroke="black" stroke-width="1"/>
+</svg>
+
+<hr/>
+
+<h2>7. Mixed inline: bold, italic, code</h2>
+
+<p>Inline <strong>bold</strong>, <em>italic</em>, <code>monospace</code>,
+and an inline <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+SVG dot all in the same line.</p>
+
+<hr/>
+
+<h2>8. End</h2>
+
+<p>If sections 1–7 above render with visible icons, table grid, and pipeline
+diagram, SVG works and we can drop into agent-emitted XHTML for any rich
+document. Tell me which sections render and which don't.</p>
+
+</body>
+</html>

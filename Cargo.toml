@@ -1,41 +1,55 @@
 [package]
 name = "rr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-authors = ["rr user"]
-description = "CLI tool to sync markdown files to reMarkable"
+authors = ["rr contributors"]
+description = "Production-grade CLI for syncing documents to reMarkable Paper Pro"
+license = "MIT"
+rust-version = "1.74"
+
+[lib]
+name = "rr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rr"
+path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1.40", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+colored = "2.2"
+crc32c = "0.6"
+dirs = "5.0"
+futures = "0.3"
+hex = "0.4"
+keyring = { version = "3", features = ["sync-secret-service", "apple-native"] }
+pulldown-cmark = "0.12"
+resvg = { version = "0.44", default-features = false, features = ["text"] }
+tiny-skia = "0.11"
+usvg = { version = "0.44", default-features = false, features = ["text", "system-fonts"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "gzip"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
-pulldown-cmark = "0.12"
-base64 = "0.22"
-anyhow = "1.0"
-dirs = "5.0"
-walkdir = "2.5"
-chrono = { version = "0.4", features = ["serde"] }
-keyring = { version = "3", features = ["sync-secret-service", "apple-native"] }
-url = "2.5"
 sha2 = "0.10"
-rand = "0.8"
-webbrowser = "1.0"
-tiny_http = "0.12"
-notify = "6.1"
-handlebars = "6.2"
-serde_urlencoded = "0.7"
+thiserror = "1.0"
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "fs", "process", "signal", "io-util", "time", "sync"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.10", features = ["v4"] }
-shellexpand = "3.1"
-hex = "0.4.3"
-crc32c = "0.6"
-futures = "0.3.32"
-markdown2pdf = "1.2.0"
-colored = "2.2"
+walkdir = "2.5"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 strip = true
+codegen-units = 1
+panic = "abort"

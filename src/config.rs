@@ -1,23 +1,46 @@
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+//! Configuration & token storage.
+//!
+//! On-disk layout (TOML), under `dirs::config_dir()/rr/config.toml`:
+//!
+//! ```toml
+//! default_folder = "AI Notes"
+//!
+//! [auth]
+//! access_token = "..."
+//! device_token = "..."
+//! device_id    = "..."
+//! tectonic     = "eu"
+//! expires_at   = 1779232253
+//! ```
+
 use std::path::PathBuf;
 
-const APP_NAME: &str = "rr";
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+const APP_NAME: &str = "rr";
+const KEYRING_SERVICE: &str = "rr";
+const KEYRING_USER: &str = "remarkable_token";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
     pub auth: Option<AuthConfig>,
-    pub default_format: Option<String>,
+    #[serde(default)]
     pub default_folder: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    pub access_token: String,   // user token (for API calls)
-    pub device_token: Option<String>, // device token (for refreshing)
-    pub device_id: Option<String>,    // device ID
+    pub access_token: String,
+    #[serde(default)]
+    pub device_token: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
     pub tectonic: Option<String>,
-    pub api_url: Option<String>,
+    /// JWT expiry as a UNIX timestamp.
+    #[serde(default)]
     pub expires_at: Option<i64>,
 }
 
@@ -27,113 +50,116 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config from {:?}", path))?;
-        let config: Config = toml::from_str(&contents)
-            .with_context(|| "Failed to parse config TOML")?;
-        Ok(config)
+        let raw =
+            std::fs::read_to_string(&path).with_context(|| format!("read config {:?}", path))?;
+        toml::from_str(&raw).with_context(|| format!("parse config {:?}", path))
     }
 
     pub fn save(&self) -> Result<()> {
         let path = config_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config dir {:?}", parent))?;
+                .with_context(|| format!("create config dir {:?}", parent))?;
         }
-        let contents = toml::to_string_pretty(self)
-            .with_context(|| "Failed to serialize config")?;
-        std::fs::write(&path, contents)
-            .with_context(|| format!("Failed to write config to {:?}", path))?;
-        Ok(())
+        let raw = toml::to_string_pretty(self).context("serialize config")?;
+        std::fs::write(&path, raw).with_context(|| format!("write config {:?}", path))
     }
 
     pub fn is_authenticated(&self) -> bool {
-        self.auth.is_some()
+        self.auth
+            .as_ref()
+            .is_some_and(|a| !a.access_token.is_empty())
     }
 
     pub fn get_token(&self) -> Option<&str> {
         self.auth.as_ref().map(|a| a.access_token.as_str())
     }
 
-    /// Refresh the user token using the stored device token
+    pub fn tectonic(&self) -> Option<&str> {
+        self.auth.as_ref().and_then(|a| a.tectonic.as_deref())
+    }
+
+    /// Refresh user token using the stored device token. Returns true on
+    /// success; the token is persisted to disk before return.
     pub async fn refresh_token(&mut self) -> Result<bool> {
-        let auth = match &self.auth {
-            Some(auth) => auth.clone(),
-            None => return Ok(false),
+        let Some(auth) = self.auth.clone() else {
+            return Ok(false);
+        };
+        let Some(device_token) = auth.device_token else {
+            return Ok(false);
+        };
+        let Some(device_id) = auth.device_id else {
+            return Ok(false);
         };
 
-        let device_token = match &auth.device_token {
-            Some(token) => token.clone(),
-            None => return Ok(false),
-        };
-
-        let device_id = match &auth.device_id {
-            Some(id) => id.clone(),
-            None => return Ok(false),
-        };
-
-        match super::device_auth::refresh_with_device_token(device_token, device_id).await {
+        match crate::device_auth::refresh_with_device_token(device_token, device_id).await {
             Ok(tokens) => {
-                if let Some(auth) = &mut self.auth {
-                    auth.access_token = tokens.user_token;
-                    auth.expires_at = None;
+                if let Some(a) = &mut self.auth {
+                    a.access_token = tokens.user_token.clone();
+                    a.tectonic = crate::device_auth::extract_tectonic_claim(&tokens.user_token)
+                        .or_else(|| a.tectonic.clone());
+                    a.expires_at = jwt_expiry(&tokens.user_token);
                 }
                 self.save()?;
                 Ok(true)
             }
             Err(e) => {
-                eprintln!("Token refresh failed: {}", e);
+                tracing::warn!(error = %e, "token refresh failed");
                 Ok(false)
             }
         }
     }
 
-    pub fn get_api_url(&self) -> String {
-        self.auth
-            .as_ref()
-            .and_then(|a| a.api_url.clone())
-            .unwrap_or_else(|| "https://internal.cloud.remarkable.com".to_string())
-    }
-
-    pub fn get_tectonic_url(&self) -> String {
-        let tectonic = self
-            .auth
-            .as_ref()
-            .and_then(|a| a.tectonic.clone())
-            .unwrap_or_else(|| "eu".to_string());
-        format!("https://web.{}.tectonic.remarkable.com", tectonic)
+    pub fn token_expired(&self) -> bool {
+        match self.auth.as_ref().and_then(|a| a.expires_at) {
+            Some(exp) => chrono::Utc::now().timestamp() + 300 >= exp,
+            None => true,
+        }
     }
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .context("Could not find config directory")?;
-    Ok(config_dir.join(APP_NAME).join("config.toml"))
+    let base = dirs::config_dir().context("no config dir")?;
+    Ok(base.join(APP_NAME).join("config.toml"))
 }
 
-/// Store token securely using keyring (macOS Keychain / Linux Secret Service / Windows Credential Manager)
 pub fn store_token_secure(token: &str) -> Result<()> {
-    let entry = keyring::Entry::new("rr", "remarkable_token")
-        .with_context(|| "Failed to create keyring entry")?;
-    entry.set_password(token)
-        .with_context(|| "Failed to store token in keyring")?;
-    Ok(())
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("create keyring entry")?;
+    entry.set_password(token).context("set keyring password")
 }
 
 pub fn get_token_secure() -> Result<Option<String>> {
-    let entry = keyring::Entry::new("rr", "remarkable_token")
-        .with_context(|| "Failed to create keyring entry")?;
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("create keyring entry")?;
     match entry.get_password() {
-        Ok(token) => Ok(Some(token)),
+        Ok(p) => Ok(Some(p)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(anyhow::anyhow!("Keyring error: {}", e)),
+        Err(e) => Err(anyhow::anyhow!("keyring: {e}")),
     }
 }
 
 pub fn delete_token_secure() -> Result<()> {
-    let entry = keyring::Entry::new("rr", "remarkable_token")
-        .with_context(|| "Failed to create keyring entry")?;
-    entry.delete_credential()
-        .with_context(|| "Failed to delete token from keyring")?;
-    Ok(())
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).context("create keyring entry")?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(anyhow::anyhow!("keyring delete: {e}")),
+    }
+}
+
+/// Parse the `exp` claim from a JWT without verification.
+pub fn jwt_expiry(token: &str) -> Option<i64> {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1)?;
+    let padded = match payload.len() % 4 {
+        0 => payload.to_string(),
+        n => format!("{}{}", payload, "=".repeat(4 - n)),
+    };
+    let bytes = base64::engine::general_purpose::URL_SAFE
+        .decode(padded)
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("exp").and_then(|v| v.as_i64())
 }

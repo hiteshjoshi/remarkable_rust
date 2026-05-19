@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # rr installer - downloads pre-built binaries from GitHub releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/hiteshjoshi/reMarkable-rust/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/hiteshjoshi/remarkable_rust/main/install.sh | bash
 
-REPO="hiteshjoshi/reMarkable-rust"
+REPO="hiteshjoshi/remarkable_rust"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # Colors
@@ -54,7 +54,7 @@ get_latest_version() {
 download() {
     local url="$1"
     local output="$2"
-    
+
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$url" -o "$output"
     elif command -v wget >/dev/null 2>&1; then
@@ -62,6 +62,46 @@ download() {
     else
         error "Neither curl nor wget found. Please install one of them."
     fi
+}
+
+# Compute SHA-256 of a file. Echoes the bare hex digest.
+sha256_of() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        echo ""
+    fi
+}
+
+# Verify $archive against $checksum_file (a file containing one or more
+# lines of "<sha256>  <filename>" — the GitHub release SHA256SUMS format).
+verify_checksum() {
+    local archive="$1"
+    local checksum_file="$2"
+    local archive_name
+    archive_name="$(basename "$archive")"
+
+    local expected
+    expected=$(grep -E "[[:space:]]${archive_name}\$" "$checksum_file" | awk '{print $1}' | head -1)
+    if [ -z "$expected" ]; then
+        warn "No checksum entry for $archive_name; skipping verification."
+        return 0
+    fi
+
+    local actual
+    actual=$(sha256_of "$archive")
+    if [ -z "$actual" ]; then
+        warn "No sha256sum/shasum available; skipping verification."
+        return 0
+    fi
+
+    if [ "$expected" != "$actual" ]; then
+        error "Checksum mismatch for $archive_name:\n    expected: $expected\n    actual:   $actual"
+    fi
+    success "Checksum verified for $archive_name"
 }
 
 main() {
@@ -167,7 +207,20 @@ main() {
         if ! download "$download_url" "$tmp_dir/$archive"; then
             error "Download failed. The release may not exist yet for your platform."
         fi
-        
+
+        # Best-effort checksum verification: prefer the combined SHA256SUMS,
+        # fall back to the per-archive .sha256 file. If neither exists in
+        # the release, continue with a warning so older releases still work.
+        local sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
+        local per_url="${download_url}.sha256"
+        if download "$sums_url" "$tmp_dir/SHA256SUMS" 2>/dev/null; then
+            verify_checksum "$tmp_dir/$archive" "$tmp_dir/SHA256SUMS"
+        elif download "$per_url" "$tmp_dir/${archive}.sha256" 2>/dev/null; then
+            verify_checksum "$tmp_dir/$archive" "$tmp_dir/${archive}.sha256"
+        else
+            warn "No checksum file in release; skipping integrity check."
+        fi
+
         # Extract
         info "Extracting archive..."
         tar xzf "$tmp_dir/$archive" -C "$tmp_dir"
