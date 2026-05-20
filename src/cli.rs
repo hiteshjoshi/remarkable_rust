@@ -26,11 +26,12 @@ pub type CliError = anyhow::Error;
 #[command(
     name = "rr",
     version,
-    about = "Sync markdown to your reMarkable Paper Pro as native notebooks",
-    long_about = "rr is a small Rust CLI that wraps the official reMarkable cloud\n\
-                  Document API. Markdown is packaged into an EPUB locally, posted\n\
-                  to /import/v1/files with convert=true, and the cloud renders it\n\
-                  into a native reMarkable notebook on the device. No PDFs.",
+    about = "Push markdown to your reMarkable as a native notebook",
+    long_about = "rr builds a native v6 reMarkable notebook from a markdown\n\
+                  file and uploads it via the cloud sync API. Headings,\n\
+                  paragraphs, and bullets render as typed text; tables\n\
+                  render as embedded raster images. Works with any\n\
+                  reMarkable account — Connect is not required.",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -51,8 +52,38 @@ pub enum Command {
         token: Option<String>,
     },
 
-    /// Upload a markdown file. Default delivers a native reMarkable notebook.
-    Upload {
+    /// Push markdown to your reMarkable as a native v6 notebook.
+    ///
+    /// Works on any reMarkable account — Connect not required. Tables,
+    /// headings, bullets, and prose all ship as native typed text plus
+    /// embedded raster images, locally built and uploaded directly via
+    /// the cloud sync API.
+    Push {
+        /// Path to a markdown file (or `-` for stdin).
+        file: PathBuf,
+
+        /// Override the document title (otherwise inferred from H1 or filename).
+        #[arg(short, long)]
+        title: Option<String>,
+
+        /// Target device model. Determines page dimensions and text frame
+        /// geometry. Default: paper-pro.
+        #[arg(long, value_enum, default_value_t = DeviceArg::PaperPro)]
+        device: DeviceArg,
+
+        /// Skip markdown parsing and ship a pre-built `.rm` v6 page verbatim
+        /// as the page content. Useful for isolating whether issues are
+        /// in the v6 generator or in the cloud bundle layer.
+        #[arg(long, value_name = "PATH")]
+        rm: Option<PathBuf>,
+    },
+
+    /// (hidden) Legacy upload path that builds an EPUB locally and asks
+    /// the reMarkable cloud to convert it to a native notebook. Kept for
+    /// fallback only — the default `push` produces the same result
+    /// without any cloud-side conversion.
+    #[command(hide = true)]
+    ConnectPush {
         /// Path to a markdown file (or `-` for stdin).
         file: PathBuf,
 
@@ -123,6 +154,27 @@ pub enum Command {
     Cancel { id: String },
 }
 
+/// CLI-facing device selector. Maps to [`crate::v6::page::Device`].
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DeviceArg {
+    /// reMarkable Paper Pro (10.5" color). 1620 × 2160 drawable area.
+    PaperPro,
+    /// reMarkable Paper Pro Move (8" color). ~954 × 1696 drawable area.
+    PaperProMove,
+    /// reMarkable 2 (10.3"). 1404 × 1872 drawable area.
+    Rm2,
+}
+
+impl From<DeviceArg> for crate::v6::page::Device {
+    fn from(d: DeviceArg) -> Self {
+        match d {
+            DeviceArg::PaperPro => crate::v6::page::Device::PaperPro,
+            DeviceArg::PaperProMove => crate::v6::page::Device::PaperProMove,
+            DeviceArg::Rm2 => crate::v6::page::Device::Rm2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum WireFormat {
     /// EPUB → /import/v1/files (convert=true) → native reMarkable notebook.
@@ -140,7 +192,8 @@ pub async fn run() -> Result<()> {
     let job_id = jobs::current_job_id();
     if let Some(id) = &job_id {
         let kind = match &cli.command {
-            Command::Upload { .. } => "upload",
+            Command::Push { .. } => "push",
+            Command::ConnectPush { .. } => "connect-push",
             Command::Mkdir { .. } => "mkdir",
             Command::Rm { .. } => "rm",
             _ => "other",
@@ -168,14 +221,20 @@ pub async fn run() -> Result<()> {
 async fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Auth { token } => handle_auth(token).await,
-        Command::Upload {
+        Command::Push {
+            file,
+            title,
+            device,
+            rm,
+        } => handle_push(file, title, device, rm).await,
+        Command::ConnectPush {
             file,
             title,
             folder,
             dir,
             format,
             background,
-        } => handle_upload(file, title, folder, dir, format, background).await,
+        } => handle_connect_push(file, title, folder, dir, format, background).await,
         Command::Ls { folders } => handle_ls(folders).await,
         Command::Mkdir { name, parent } => handle_mkdir(name, parent).await,
         Command::Rm { id } => handle_rm(id).await,
@@ -186,6 +245,106 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::Logs { id } => handle_logs(&id),
         Command::Cancel { id } => handle_cancel(&id),
     }
+}
+
+async fn handle_push(
+    file: PathBuf,
+    custom_title: Option<String>,
+    device: DeviceArg,
+    rm_override: Option<PathBuf>,
+) -> Result<()> {
+    // Token: reuse the same load+refresh path the cloud upload uses; sync v3
+    // takes the same bearer.
+    let mut cfg = Config::load()?;
+    if !cfg.is_authenticated() {
+        bail!("not authenticated; run `rr auth` first");
+    }
+    if cfg.token_expired() && !cfg.refresh_token().await? {
+        bail!("token refresh failed; run `rr auth` to re-pair");
+    }
+    let token = cfg
+        .get_token()
+        .context("missing token after refresh")?
+        .to_owned();
+
+    // Read markdown source. Title falls back to H1, then filename, then a
+    // generic "Untitled".
+    let md = if file.as_os_str() == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf).context("read stdin")?;
+        buf
+    } else {
+        std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?
+    };
+
+    let title = custom_title
+        .or_else(|| extract_h1_title(&md))
+        .or_else(|| {
+            file.file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "Untitled".into());
+
+    println!("Building bundle '{}' for {:?}...", title, device);
+    // Split on `---` horizontal rules to create multi-page notebooks.
+    // Each chunk becomes one page with its tables rendered as images.
+    let pages = crate::notebook::PageInput::pages_from_markdown(&md);
+    let opts =
+        crate::notebook::BundleOptions::new(title.clone(), pages).with_device(device.into());
+    let mut bundle = crate::notebook::Bundle::build(&opts)?;
+
+    if let Some(rm_path) = rm_override {
+        let raw_rm = std::fs::read(&rm_path)
+            .with_context(|| format!("read --rm {}", rm_path.display()))?;
+        println!(
+            "  --rm override: replacing page .rm with {} ({} bytes)",
+            rm_path.display(),
+            raw_rm.len()
+        );
+        if let Some(first) = bundle.pages.first_mut() {
+            first.rm_bytes = raw_rm;
+        }
+    }
+    let total_bytes: usize = bundle.metadata_json.len()
+        + bundle.content_json.len()
+        + bundle.pagedata.len()
+        + bundle.pages.iter().map(|p| p.rm_bytes.len() + p.metadata_json.len()).sum::<usize>();
+    println!(
+        "  doc: {} | pages: {} | bytes to upload: {}",
+        bundle.doc_uuid,
+        bundle.pages.len(),
+        total_bytes
+    );
+
+    println!("Uploading via cloud sync v3...");
+    let client = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    let result = client
+        .upload_bundle(&bundle)
+        .await
+        .context("upload bundle")?;
+    println!(
+        "{} doc {} (root gen {})",
+        "✓".green(),
+        result.doc_id,
+        result.new_generation
+    );
+    Ok(())
+}
+
+/// Pull the first markdown H1 as a title, if there is one.
+fn extract_h1_title(md: &str) -> Option<String> {
+    for line in md.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            let title = rest.trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Pair a device with reMarkable's auth server.
@@ -262,7 +421,7 @@ async fn cloud_client() -> Result<(Config, CloudClient)> {
     Ok((cfg, client))
 }
 
-async fn handle_upload(
+async fn handle_connect_push(
     file: PathBuf,
     custom_title: Option<String>,
     folder: Option<String>,
@@ -271,7 +430,7 @@ async fn handle_upload(
     background: bool,
 ) -> Result<()> {
     if background {
-        return spawn_background_upload(file, custom_title, folder, dir, format);
+        return spawn_background_connect_push(file, custom_title, folder, dir, format);
     }
 
     let prepared: Prepared = if file.as_os_str() == "-" {
@@ -398,7 +557,7 @@ async fn handle_upload(
     Ok(())
 }
 
-fn spawn_background_upload(
+fn spawn_background_connect_push(
     file: PathBuf,
     title: Option<String>,
     folder: Option<String>,
@@ -410,7 +569,7 @@ fn spawn_background_upload(
         bail!("--background passed to an already-detached process");
     }
 
-    let mut child_args: Vec<String> = vec!["upload".into()];
+    let mut child_args: Vec<String> = vec!["connect-push".into()];
     child_args.push(
         file.to_str()
             .context("file path must be valid utf-8")?
@@ -434,7 +593,8 @@ fn spawn_background_upload(
         WireFormat::Epub => "epub".into(),
     });
 
-    let handle = jobs::spawn_detached("upload", &child_args).map_err(anyhow::Error::from)?;
+    let handle =
+        jobs::spawn_detached("connect-push", &child_args).map_err(anyhow::Error::from)?;
     println!("{} Background job {} started.", "✓".green(), handle.id);
     println!("  pid:  {}", handle.pid);
     println!("  log:  {}", handle.log_path.display());

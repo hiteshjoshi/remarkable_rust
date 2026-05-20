@@ -19,6 +19,9 @@ pub enum Error {
     #[error("network error: {0}")]
     Network(#[from] reqwest::Error),
 
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("io error at {path:?}: {source}")]
     Io {
         path: PathBuf,
@@ -34,6 +37,9 @@ pub enum Error {
 
     #[error("conversion error: {0}")]
     Convert(String),
+
+    #[error("v6 format error: {0}")]
+    V6Format(String),
 
     #[error("api error: HTTP {status} – {body}")]
     Api { status: u16, body: String },

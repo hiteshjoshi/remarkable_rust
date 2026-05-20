@@ -11,3 +11,6 @@ docs/protocol/extension-*.ts
 docs/protocol/extension-*.js
 docs/protocol/*.recovered.*
 /tmp_*
+
+# Cloned third-party repos pulled into tools/ for protocol study
+tools/v6-ref/
