@@ -92,7 +92,10 @@ fn heading_plus_paragraph_plus_bullets_round_trips() {
             _ => None,
         })
         .collect();
-    assert!(format_codes.is_empty(), "format codes should be dropped, got {format_codes:?}");
+    assert!(
+        format_codes.is_empty(),
+        "format codes should be dropped, got {format_codes:?}"
+    );
 
     // Concatenated text runs preserve the source content (modulo soft
     // breaks → spaces and trailing paragraph \n).

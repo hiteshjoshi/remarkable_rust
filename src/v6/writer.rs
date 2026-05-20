@@ -109,9 +109,8 @@ impl TaggedWriter {
         let content_start = self.bytes.len();
         let value = inner(self)?;
         let content_end = self.bytes.len();
-        let len = u32::try_from(content_end - content_start).map_err(|_| {
-            Error::V6Format("subblock content exceeds 4 GiB".into())
-        })?;
+        let len = u32::try_from(content_end - content_start)
+            .map_err(|_| Error::V6Format("subblock content exceeds 4 GiB".into()))?;
         self.bytes[len_pos..len_pos + 4].copy_from_slice(&len.to_le_bytes());
         Ok(value)
     }

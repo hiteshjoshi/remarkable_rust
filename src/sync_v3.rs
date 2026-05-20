@@ -237,9 +237,7 @@ impl SyncClient {
                 Error::InvalidResponse(format!("doc {doc_id} has no .metadata entry"))
             })?;
 
-        let meta_bytes = self
-            .get_blob(&meta_entry.hash, &meta_entry.id)
-            .await?;
+        let meta_bytes = self.get_blob(&meta_entry.hash, &meta_entry.id).await?;
         let meta: DocMetaBlob = serde_json::from_slice(&meta_bytes)
             .map_err(|e| Error::InvalidResponse(format!("decode metadata for {doc_id}: {e}")))?;
 
@@ -637,9 +635,8 @@ fn replace_or_append(mut entries: Vec<IndexEntry>, entry: IndexEntry) -> Vec<Ind
 /// - v4 only: optional totals line `0:<label>:<count>:<totalSize>`.
 /// - Each subsequent line: `<hash>:<type>:<id>:<subfiles>:<size>`.
 fn parse_index(body: &[u8]) -> Result<(Schema, Vec<IndexEntry>)> {
-    let text = std::str::from_utf8(body).map_err(|e| {
-        Error::InvalidResponse(format!("index blob is not utf-8: {e}"))
-    })?;
+    let text = std::str::from_utf8(body)
+        .map_err(|e| Error::InvalidResponse(format!("index blob is not utf-8: {e}")))?;
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let schema_line = lines
         .next()
@@ -679,12 +676,7 @@ fn parse_index(body: &[u8]) -> Result<(Schema, Vec<IndexEntry>)> {
 /// Serialize an index blob. `label` is the docID for doc indexes or `"."`
 /// for the root. `is_root` controls the per-entry "type" field, which is
 /// `"80000000"` only for the v3 root and `"0"` everywhere else.
-fn serialize_index(
-    schema: Schema,
-    label: &str,
-    entries: &[IndexEntry],
-    is_root: bool,
-) -> Vec<u8> {
+fn serialize_index(schema: Schema, label: &str, entries: &[IndexEntry], is_root: bool) -> Vec<u8> {
     let mut sorted: Vec<&IndexEntry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -808,19 +800,39 @@ mod tests {
     #[test]
     fn replace_or_append_replaces_by_id() {
         let entries = vec![
-            IndexEntry { hash: "a".into(), id: "1".into(), subfiles: 0, size: 1 },
-            IndexEntry { hash: "b".into(), id: "2".into(), subfiles: 0, size: 2 },
+            IndexEntry {
+                hash: "a".into(),
+                id: "1".into(),
+                subfiles: 0,
+                size: 1,
+            },
+            IndexEntry {
+                hash: "b".into(),
+                id: "2".into(),
+                subfiles: 0,
+                size: 2,
+            },
         ];
         let updated = replace_or_append(
             entries.clone(),
-            IndexEntry { hash: "z".into(), id: "2".into(), subfiles: 0, size: 99 },
+            IndexEntry {
+                hash: "z".into(),
+                id: "2".into(),
+                subfiles: 0,
+                size: 99,
+            },
         );
         assert_eq!(updated.len(), 2);
         assert_eq!(updated.iter().find(|e| e.id == "2").unwrap().hash, "z");
 
         let appended = replace_or_append(
             entries,
-            IndexEntry { hash: "c".into(), id: "3".into(), subfiles: 0, size: 3 },
+            IndexEntry {
+                hash: "c".into(),
+                id: "3".into(),
+                subfiles: 0,
+                size: 3,
+            },
         );
         assert_eq!(appended.len(), 3);
         assert_eq!(appended.last().unwrap().id, "3");

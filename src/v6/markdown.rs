@@ -45,7 +45,10 @@ pub const DEFAULT_WIDTH: f32 = 936.0;
 /// First-character CrdtId. Both rmscene's reference and observed
 /// device-written notebooks start the text CRDT at this slot, leaving room
 /// at low IDs for system blocks.
-const FIRST_CHAR_ID: CrdtId = CrdtId { part1: 1, part2: 16 };
+const FIRST_CHAR_ID: CrdtId = CrdtId {
+    part1: 1,
+    part2: 16,
+};
 
 /// Convert markdown text into a [`RootTextBlock`] using Paper Pro
 /// defaults. Use [`markdown_to_root_text_for`] to target a different

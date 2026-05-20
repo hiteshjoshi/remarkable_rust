@@ -15,8 +15,8 @@
 use uuid::Uuid;
 
 use super::blocks::{
-    AuthorIdsBlock, Block, MigrationInfoBlock, PageInfoBlock, RootTextBlock,
-    SceneInfoBlock, TextItemValue,
+    AuthorIdsBlock, Block, MigrationInfoBlock, PageInfoBlock, RootTextBlock, SceneInfoBlock,
+    TextItemValue,
 };
 use super::stream::{CrdtId, LwwValue};
 
@@ -176,7 +176,6 @@ impl Device {
     }
 }
 
-
 /// Build a full v6 page block list from markdown, with optional images.
 ///
 /// Block ordering matches the layout the device itself emits for native
@@ -186,11 +185,7 @@ impl Device {
 /// `ImageRegistry` block (0x0E) sits between `SceneInfo` and the first
 /// `SceneTree`; `ImageItem` blocks (0x0F) sit at the very end, one per
 /// embedded image.
-pub fn build_page_with_images(
-    md: &str,
-    opts: &PageOptions,
-    images: &[PageImage],
-) -> Vec<Block> {
+pub fn build_page_with_images(md: &str, opts: &PageOptions, images: &[PageImage]) -> Vec<Block> {
     use super::image::{build_image_blocks, ImageEntry, PER_IMAGE_ID_SPAN};
 
     let mut blocks = build_page(md, opts);

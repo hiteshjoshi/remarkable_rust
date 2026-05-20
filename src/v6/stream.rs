@@ -100,9 +100,10 @@ impl<'a> Stream<'a> {
     }
 
     pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.pos.checked_add(n).ok_or_else(|| {
-            Error::V6Format(format!("read_bytes({n}) overflow at {}", self.pos))
-        })?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| Error::V6Format(format!("read_bytes({n}) overflow at {}", self.pos)))?;
         if end > self.buf.len() {
             return Err(Error::V6Format(format!(
                 "read_bytes({n}) past eof at {} (len={})",
@@ -219,9 +220,8 @@ impl<'a> Stream<'a> {
     pub fn read_tag_raw(&mut self) -> Result<(u32, TagType)> {
         let raw = self.read_varuint()?;
         let tag_type = TagType::from_nibble((raw & 0xF) as u8)?;
-        let index = u32::try_from(raw >> 4).map_err(|_| {
-            Error::V6Format(format!("tag index {} overflows u32", raw >> 4))
-        })?;
+        let index = u32::try_from(raw >> 4)
+            .map_err(|_| Error::V6Format(format!("tag index {} overflows u32", raw >> 4)))?;
         Ok((index, tag_type))
     }
 }

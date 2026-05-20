@@ -38,8 +38,7 @@ fn roundtrip_normal_ab() {
 
 #[test]
 fn roundtrip_bold_heading_bullet_normal() {
-    let orig =
-        std::fs::read(samples_dir().join("Bold_Heading_Bullet_Normal.rm")).unwrap();
+    let orig = std::fs::read(samples_dir().join("Bold_Heading_Bullet_Normal.rm")).unwrap();
     let blocks = v6::parse(&orig).expect("decode");
     let out = v6::encode(&blocks).expect("encode");
     assert_bytes_equal(&orig, &out, "Bold_Heading_Bullet_Normal.rm");

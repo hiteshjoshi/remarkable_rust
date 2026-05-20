@@ -119,7 +119,10 @@ pub fn build_image_blocks(images: &[ImageEntry], id_base: u64) -> ImageBlocks {
         .map(|i| ImageIds::allocate(id_base + (i as u64) * PER_IMAGE_ID_SPAN))
         .collect();
 
-    let layer_one_group_root = CrdtId { part1: 0, part2: 11 };
+    let layer_one_group_root = CrdtId {
+        part1: 0,
+        part2: 11,
+    };
 
     // 0x0E registry: one block listing every image.
     let registry = build_registry_block(images, &ids);
@@ -145,7 +148,12 @@ pub fn build_image_blocks(images: &[ImageEntry], id_base: u64) -> ImageBlocks {
             } else {
                 ids[i - 1].group_item
             };
-            build_image_scene_group_item(layer_one_group_root, id.group_item, left_id, id.group_node)
+            build_image_scene_group_item(
+                layer_one_group_root,
+                id.group_item,
+                left_id,
+                id.group_node,
+            )
         })
         .collect();
 
@@ -238,7 +246,12 @@ fn build_image_tree_node(id: &ImageIds) -> Block {
     // anchor_type LwwValue<u8> at tag 8 — observed as 2.
     write_lww_byte(&mut bytes, 8, id.anchor_type_ts, 2);
     // anchor_threshold LwwValue<f32> at tag 9 — observed as 0x420EFDFC ≈ 35.748.
-    write_lww_f32(&mut bytes, 9, id.anchor_threshold_ts, f32::from_le_bytes([0xFC, 0xFD, 0x0E, 0x42]));
+    write_lww_f32(
+        &mut bytes,
+        9,
+        id.anchor_threshold_ts,
+        f32::from_le_bytes([0xFC, 0xFD, 0x0E, 0x42]),
+    );
     // anchor_origin_x LwwValue<f32> at tag 10 — observed as -464.0.
     write_lww_f32(&mut bytes, 10, id.group_node, -464.0);
 

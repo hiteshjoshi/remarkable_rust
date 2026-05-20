@@ -272,7 +272,9 @@ async fn handle_push(
     let md = if file.as_os_str() == "-" {
         use std::io::Read;
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).context("read stdin")?;
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("read stdin")?;
         buf
     } else {
         std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?
@@ -280,24 +282,19 @@ async fn handle_push(
 
     let title = custom_title
         .or_else(|| extract_h1_title(&md))
-        .or_else(|| {
-            file.file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_owned)
-        })
+        .or_else(|| file.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
         .unwrap_or_else(|| "Untitled".into());
 
     println!("Building bundle '{}' for {:?}...", title, device);
     // Split on `---` horizontal rules to create multi-page notebooks.
     // Each chunk becomes one page with its tables rendered as images.
     let pages = crate::notebook::PageInput::pages_from_markdown(&md);
-    let opts =
-        crate::notebook::BundleOptions::new(title.clone(), pages).with_device(device.into());
+    let opts = crate::notebook::BundleOptions::new(title.clone(), pages).with_device(device.into());
     let mut bundle = crate::notebook::Bundle::build(&opts)?;
 
     if let Some(rm_path) = rm_override {
-        let raw_rm = std::fs::read(&rm_path)
-            .with_context(|| format!("read --rm {}", rm_path.display()))?;
+        let raw_rm =
+            std::fs::read(&rm_path).with_context(|| format!("read --rm {}", rm_path.display()))?;
         println!(
             "  --rm override: replacing page .rm with {} ({} bytes)",
             rm_path.display(),
@@ -310,7 +307,11 @@ async fn handle_push(
     let total_bytes: usize = bundle.metadata_json.len()
         + bundle.content_json.len()
         + bundle.pagedata.len()
-        + bundle.pages.iter().map(|p| p.rm_bytes.len() + p.metadata_json.len()).sum::<usize>();
+        + bundle
+            .pages
+            .iter()
+            .map(|p| p.rm_bytes.len() + p.metadata_json.len())
+            .sum::<usize>();
     println!(
         "  doc: {} | pages: {} | bytes to upload: {}",
         bundle.doc_uuid,
@@ -612,8 +613,7 @@ fn spawn_background_connect_push(
         WireFormat::Epub => "epub".into(),
     });
 
-    let handle =
-        jobs::spawn_detached("connect-push", &child_args).map_err(anyhow::Error::from)?;
+    let handle = jobs::spawn_detached("connect-push", &child_args).map_err(anyhow::Error::from)?;
     println!("{} Background job {} started.", "✓".green(), handle.id);
     println!("  pid:  {}", handle.pid);
     println!("  log:  {}", handle.log_path.display());

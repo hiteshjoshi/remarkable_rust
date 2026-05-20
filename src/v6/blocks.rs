@@ -97,9 +97,7 @@ impl Block {
         // (Raw blocks consume the whole payload above, so there's nothing
         // left to capture for them.)
         if let Some(slot) = block.extra_data_mut() {
-            let remaining = frame
-                .payload_end()
-                .saturating_sub(reader.stream.position());
+            let remaining = frame.payload_end().saturating_sub(reader.stream.position());
             if remaining > 0 {
                 *slot = reader.stream.read_bytes(remaining)?.to_vec();
             }
@@ -556,10 +554,7 @@ fn read_text_item(r: &mut TaggedReader<'_>) -> Result<TextItem> {
     })
 }
 
-fn read_string_with_format(
-    r: &mut TaggedReader<'_>,
-    index: u32,
-) -> Result<(String, Option<u32>)> {
+fn read_string_with_format(r: &mut TaggedReader<'_>, index: u32) -> Result<(String, Option<u32>)> {
     use super::stream::TagType;
     r.read_subblock(index, |r| {
         let len = r.stream.read_varuint()? as usize;
@@ -593,9 +588,7 @@ fn read_string_with_format(
 /// 3. Subblock at field index 2 containing two raw bytes: the first must
 ///    be 17 (0x11) — its meaning is undocumented — and the second is the
 ///    `ParagraphStyle` enum value.
-fn read_text_format(
-    r: &mut TaggedReader<'_>,
-) -> Result<(CrdtId, LwwValue<ParagraphStyle>)> {
+fn read_text_format(r: &mut TaggedReader<'_>) -> Result<(CrdtId, LwwValue<ParagraphStyle>)> {
     let char_id = r.stream.read_crdt_id()?;
     let timestamp = r.read_id(1)?;
     let value = r.read_subblock(2, |r| {

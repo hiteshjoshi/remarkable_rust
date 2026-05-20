@@ -524,23 +524,17 @@ impl Bundle {
         let pagedata_path = parent_dir.join(format!("{doc_str}.pagedata"));
         let pages_dir = parent_dir.join(&doc_str);
 
-        std::fs::write(&metadata_path, &self.metadata_json).map_err(|source| {
-            crate::Error::Io {
-                path: metadata_path.clone(),
-                source,
-            }
+        std::fs::write(&metadata_path, &self.metadata_json).map_err(|source| crate::Error::Io {
+            path: metadata_path.clone(),
+            source,
         })?;
-        std::fs::write(&content_path, &self.content_json).map_err(|source| {
-            crate::Error::Io {
-                path: content_path.clone(),
-                source,
-            }
+        std::fs::write(&content_path, &self.content_json).map_err(|source| crate::Error::Io {
+            path: content_path.clone(),
+            source,
         })?;
-        std::fs::write(&pagedata_path, &self.pagedata).map_err(|source| {
-            crate::Error::Io {
-                path: pagedata_path.clone(),
-                source,
-            }
+        std::fs::write(&pagedata_path, &self.pagedata).map_err(|source| crate::Error::Io {
+            path: pagedata_path.clone(),
+            source,
         })?;
         std::fs::create_dir_all(&pages_dir).map_err(|source| crate::Error::Io {
             path: pages_dir.clone(),
@@ -551,11 +545,9 @@ impl Bundle {
         for page in &self.pages {
             let rm_path = pages_dir.join(format!("{}.rm", page.uuid));
             let pmeta_path = pages_dir.join(format!("{}-metadata.json", page.uuid));
-            std::fs::write(&rm_path, &page.rm_bytes).map_err(|source| {
-                crate::Error::Io {
-                    path: rm_path.clone(),
-                    source,
-                }
+            std::fs::write(&rm_path, &page.rm_bytes).map_err(|source| crate::Error::Io {
+                path: rm_path.clone(),
+                source,
             })?;
             std::fs::write(&pmeta_path, &page.metadata_json).map_err(|source| {
                 crate::Error::Io {
@@ -629,7 +621,10 @@ pub struct PagePaths {
 /// any realistic markdown → notebook conversion.
 fn page_idx_label(idx: usize) -> String {
     const MAX: usize = 25 * 26;
-    assert!(idx < MAX, "page_idx_label supports up to {MAX} pages, got {idx}");
+    assert!(
+        idx < MAX,
+        "page_idx_label supports up to {MAX} pages, got {idx}"
+    );
     let first = b'b' + (idx / 26) as u8;
     let second = b'a' + (idx % 26) as u8;
     format!("{}{}", first as char, second as char)
@@ -783,10 +778,7 @@ mod tests {
 
     #[test]
     fn single_page_bundle_has_expected_files() {
-        let opts = BundleOptions::new(
-            "Test",
-            vec![PageInput::from_markdown("# Hi\n\nWorld")],
-        );
+        let opts = BundleOptions::new("Test", vec![PageInput::from_markdown("# Hi\n\nWorld")]);
         let bundle = Bundle::build(&opts).unwrap();
         assert_eq!(bundle.pages.len(), 1);
         assert!(bundle.metadata_json.contains("\"visibleName\": \"Test\""));
@@ -808,7 +800,11 @@ mod tests {
         );
         let bundle = Bundle::build(&opts).unwrap();
         // Sortable labels for the first three pages should be ba, bb, bc.
-        for needle in ["\"value\": \"ba\"", "\"value\": \"bb\"", "\"value\": \"bc\""] {
+        for needle in [
+            "\"value\": \"ba\"",
+            "\"value\": \"bb\"",
+            "\"value\": \"bc\"",
+        ] {
             assert!(
                 bundle.content_json.contains(needle),
                 "content.json missing {needle}"
@@ -819,10 +815,7 @@ mod tests {
     #[test]
     fn write_to_creates_full_directory_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let opts = BundleOptions::new(
-            "Layout",
-            vec![PageInput::from_markdown("alpha")],
-        );
+        let opts = BundleOptions::new("Layout", vec![PageInput::from_markdown("alpha")]);
         let bundle = Bundle::build(&opts).unwrap();
         let paths = bundle.write_to(tmp.path()).unwrap();
 
@@ -832,7 +825,11 @@ mod tests {
         assert!(paths.pages_dir.exists());
         for page in &paths.pages {
             assert!(page.rm.exists(), "missing {}", page.rm.display());
-            assert!(page.metadata.exists(), "missing {}", page.metadata.display());
+            assert!(
+                page.metadata.exists(),
+                "missing {}",
+                page.metadata.display()
+            );
         }
 
         // Read the .rm back and confirm it's a parseable v6 file.
