@@ -6,10 +6,9 @@ Cargo.lock.bak
 .env
 .env.local
 
-# Reverse-engineering scratch: never commit upstream code we didn't author
-docs/protocol/extension-*.ts
-docs/protocol/extension-*.js
-docs/protocol/*.recovered.*
+# Local-only: design notes and scratch examples — not part of the published crate
+/docs/
+/examples/
 /tmp_*
 
 # Cloned third-party repos pulled into tools/ for protocol study
