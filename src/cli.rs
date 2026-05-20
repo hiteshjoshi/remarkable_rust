@@ -421,6 +421,25 @@ async fn cloud_client() -> Result<(Config, CloudClient)> {
     Ok((cfg, client))
 }
 
+/// Load config, refresh the user token if expired, and hand back the bearer.
+///
+/// Same auth flow as [`cloud_client`] / [`handle_push`], but without
+/// constructing a [`CloudClient`] — callers that talk to `/sync/v3/*`
+/// directly don't need the tectonic-rewritten base URL.
+async fn ensure_fresh_token() -> Result<String> {
+    let mut cfg = Config::load()?;
+    if !cfg.is_authenticated() {
+        bail!("not authenticated; run `rr auth` first");
+    }
+    if cfg.token_expired() && !cfg.refresh_token().await? {
+        bail!("token refresh failed; run `rr auth` to re-pair");
+    }
+    Ok(cfg
+        .get_token()
+        .context("missing token after refresh")?
+        .to_owned())
+}
+
 async fn handle_connect_push(
     file: PathBuf,
     custom_title: Option<String>,
@@ -603,33 +622,38 @@ fn spawn_background_connect_push(
 }
 
 async fn handle_ls(folders_only: bool) -> Result<()> {
-    let (_cfg, client) = cloud_client().await?;
-    let files = client.list_files(folders_only).await.map_err(map_rr_err)?;
-    if files.is_empty() {
+    // Use sync/v3 (the same API push uses) — it's open to every paired
+    // account, while /doc/v2/files requires Connect-tier scopes and would
+    // 401 here for non-Connect tokens even with a perfectly valid bearer.
+    let token = ensure_fresh_token().await?;
+    let client = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    let docs = client.list_documents().await.map_err(map_rr_err)?;
+    let docs: Vec<_> = docs
+        .into_iter()
+        .filter(|d| !d.deleted)
+        .filter(|d| !folders_only || d.is_folder())
+        .collect();
+    if docs.is_empty() {
         println!("No files found.");
         return Ok(());
     }
     println!();
     println!("{:<38} {:<18} Name", "ID", "Type");
     println!("{}", "-".repeat(80));
-    for f in &files {
-        let icon = if f.file_type == "CollectionType" {
-            "📁"
-        } else {
-            "📄"
-        };
-        let parent = f
+    for d in &docs {
+        let icon = if d.is_folder() { "📁" } else { "📄" };
+        let parent = d
             .parent
             .as_deref()
             .map(|p| format!(" [in: {p}]"))
             .unwrap_or_default();
         println!(
             "{:<38} {:<18} {} {}{}",
-            f.id, f.file_type, icon, f.file_name, parent
+            d.id, d.doc_type, icon, d.visible_name, parent
         );
     }
     println!();
-    println!("Total: {} items", files.len());
+    println!("Total: {} items", docs.len());
     Ok(())
 }
 
@@ -691,18 +715,36 @@ async fn handle_status() -> Result<()> {
         }
     }
 
+    // Refresh if needed before probing the cloud. We separate "could not
+    // refresh — device pairing is stale" from "refresh worked but the cloud
+    // still rejected us" so the user gets actionable output instead of a
+    // confusing "token expired" when the bearer is fresh.
     if cfg.token_expired() {
         println!("Refreshing token...");
         if !cfg.refresh_token().await? {
-            println!("{} refresh failed", "✗".red());
+            println!(
+                "{} refresh failed — device pairing is stale; run `rr auth` to re-pair",
+                "✗".red()
+            );
             return Ok(());
         }
+        println!("{} token refreshed", "✓".green());
     }
 
+    // Probe sync/v3 — the same endpoint family `rr push` uses, and the only
+    // one open to non-Connect tokens. `/doc/v2/files` would 401 for tokens
+    // with scope `sync:fox` (the default for free accounts) even on a fresh
+    // bearer, which is what the old probe used to mis-report as "token
+    // expired".
     let token = cfg.get_token().unwrap_or("").to_owned();
-    let client = CloudClient::from_token_and_tectonic(token, cfg.tectonic())?;
-    match client.list_files(true).await {
-        Ok(items) => println!("Cloud: {} ({} folders)", "ok".green(), items.len()),
+    let sync = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    match sync.load_root().await {
+        Ok(root) => println!(
+            "Cloud: {} (root gen {}, {} docs)",
+            "ok".green(),
+            root.generation,
+            root.entries.len()
+        ),
         Err(e) => println!("Cloud: {} ({})", "fail".red(), e),
     }
     println!("Config: {:?}", config::config_path()?);

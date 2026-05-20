@@ -35,6 +35,7 @@
 //! We always honour the schema the server is currently using.
 
 use base64::Engine;
+use futures::stream::{self, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -170,6 +171,87 @@ impl SyncClient {
             root_hash: p.hash,
             generation: p.generation,
             entries,
+        })
+    }
+
+    /// Enumerate every document/folder visible to this token by walking
+    /// the root index and pulling each entry's `.metadata` blob.
+    ///
+    /// This is the listing path that works for **any** reMarkable account —
+    /// the higher-level `/doc/v2/files` endpoint requires Connect-tier
+    /// scopes, but `/sync/v3/*` is open to every paired device. We pay one
+    /// `load_root` plus two GETs per document (the doc-index, then the
+    /// `.metadata` blob inside it). Per-doc work is fanned out with a
+    /// bounded concurrency so a 200-document library still completes in a
+    /// few seconds without hammering the server.
+    pub async fn list_documents(&self) -> Result<Vec<DocumentInfo>> {
+        const FETCH_CONCURRENCY: usize = 16;
+
+        let root = self.load_root().await?;
+        let results = stream::iter(root.entries)
+            .map(|entry| async move {
+                let id = entry.id.clone();
+                match self.fetch_document_info(&entry).await {
+                    Ok(info) => Some(info),
+                    Err(e) => {
+                        tracing::warn!(doc = %id, error = %e, "skip doc: metadata fetch failed");
+                        None
+                    }
+                }
+            })
+            .buffer_unordered(FETCH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut out: Vec<DocumentInfo> = results.into_iter().flatten().collect();
+        // Folders first, then documents, alphabetised within each group.
+        // This matches what `rr ls` users have grown used to and keeps
+        // output deterministic for golden tests.
+        out.sort_by(|a, b| {
+            let ord = b.is_folder().cmp(&a.is_folder());
+            if ord != std::cmp::Ordering::Equal {
+                ord
+            } else {
+                a.visible_name
+                    .to_lowercase()
+                    .cmp(&b.visible_name.to_lowercase())
+            }
+        });
+        Ok(out)
+    }
+
+    /// For one root entry: GET its `.docSchema` index, find the entry whose
+    /// `id` ends in `.metadata`, GET that blob, parse out visible name,
+    /// type, and parent.
+    async fn fetch_document_info(&self, entry: &IndexEntry) -> Result<DocumentInfo> {
+        let doc_id = entry.id.clone();
+        let doc_index_body = self
+            .get_blob(&entry.hash, &format!("{doc_id}.docSchema"))
+            .await?;
+        let (_schema, doc_entries) = parse_index(&doc_index_body)?;
+
+        let meta_entry = doc_entries
+            .iter()
+            .find(|e| e.id.ends_with(".metadata"))
+            .ok_or_else(|| {
+                Error::InvalidResponse(format!("doc {doc_id} has no .metadata entry"))
+            })?;
+
+        let meta_bytes = self
+            .get_blob(&meta_entry.hash, &meta_entry.id)
+            .await?;
+        let meta: DocMetaBlob = serde_json::from_slice(&meta_bytes)
+            .map_err(|e| Error::InvalidResponse(format!("decode metadata for {doc_id}: {e}")))?;
+
+        // The cloud stores soft-deletes with `deleted: true` but still keeps
+        // them in the root index for a while. Surface them as a separate
+        // field so callers can filter (we hide them in `rr ls`).
+        Ok(DocumentInfo {
+            id: doc_id,
+            visible_name: meta.visible_name.unwrap_or_default(),
+            doc_type: meta.type_field.unwrap_or_default(),
+            parent: meta.parent.filter(|p| !p.is_empty()),
+            deleted: meta.deleted.unwrap_or(false),
         })
     }
 
@@ -446,6 +528,41 @@ impl SyncClient {
 pub enum UpdateRootOutcome {
     Updated { new_generation: i64 },
     GenerationRace,
+}
+
+/// One row returned by [`SyncClient::list_documents`]. Shaped to match the
+/// fields `rr ls` and the deprecated `cloud_api::FileItem` consumed, so
+/// the CLI surface doesn't have to care which endpoint the data came from.
+#[derive(Debug, Clone)]
+pub struct DocumentInfo {
+    pub id: String,
+    pub visible_name: String,
+    /// Either `"DocumentType"` or `"CollectionType"` (folder), matching the
+    /// device-side metadata format.
+    pub doc_type: String,
+    pub parent: Option<String>,
+    pub deleted: bool,
+}
+
+impl DocumentInfo {
+    pub fn is_folder(&self) -> bool {
+        self.doc_type == "CollectionType"
+    }
+}
+
+/// Minimal view of a `.metadata` blob — only the fields `rr ls` needs.
+/// Every field is optional because old documents on the cloud predate the
+/// current schema and may omit pieces.
+#[derive(Debug, Deserialize)]
+struct DocMetaBlob {
+    #[serde(rename = "visibleName", default)]
+    visible_name: Option<String>,
+    #[serde(rename = "type", default)]
+    type_field: Option<String>,
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    deleted: Option<bool>,
 }
 
 /// Summary returned by [`SyncClient::upload_bundle`].
