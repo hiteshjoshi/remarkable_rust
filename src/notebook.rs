@@ -549,11 +549,9 @@ impl Bundle {
                 path: rm_path.clone(),
                 source,
             })?;
-            std::fs::write(&pmeta_path, &page.metadata_json).map_err(|source| {
-                crate::Error::Io {
-                    path: pmeta_path.clone(),
-                    source,
-                }
+            std::fs::write(&pmeta_path, &page.metadata_json).map_err(|source| crate::Error::Io {
+                path: pmeta_path.clone(),
+                source,
             })?;
 
             // Image attachments — each page has its own subdirectory
