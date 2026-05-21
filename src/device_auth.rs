@@ -64,7 +64,7 @@ pub async fn authenticate_terminal() -> Result<AuthTokens> {
     println!();
     println!("Registering device with reMarkable...");
 
-    let tokens = register_device(&code)
+    let tokens = register_device(&code, "desktop-macos")
         .await
         .with_context(|| "Failed to register device")?;
 
@@ -75,18 +75,28 @@ pub async fn authenticate_terminal() -> Result<AuthTokens> {
     Ok(tokens)
 }
 
-/// Register device with a one-time code
+/// Register device with a one-time code obtained from
+/// `https://my.remarkable.com/device/browser/connect`.
 ///
-/// POST https://webapp-prod.cloud.remarkable.engineering/token/json/2/device/new
-/// Body: {"code": "...", "deviceDesc": "desktop-macos", "deviceID": "uuid"}
-/// Response: plain text device token
-async fn register_device(code: &str) -> Result<AuthTokens> {
+/// This is the non-interactive sibling of [`authenticate_terminal`] —
+/// no stdin reading, no prompts, just `code in, tokens out`. Use it
+/// from web backends or any context where the code arrives over a
+/// channel that isn't a TTY.
+///
+/// Returns both a long-lived `device_token` (which a backend should
+/// encrypt at rest and persist) and a freshly minted `user_token` (short
+/// lived; refresh via [`refresh_with_device_token`] when it expires).
+///
+/// POST `https://webapp-prod.cloud.remarkable.engineering/token/json/2/device/new`
+/// Body: `{"code": "...", "deviceDesc": "...", "deviceID": "uuid"}`
+/// Response: plain text device token.
+pub async fn register_device(code: &str, device_desc: &str) -> Result<AuthTokens> {
     let client = Client::new();
     let device_id = uuid::Uuid::new_v4().to_string();
 
     let body = DeviceRegisterRequest {
         code: code.to_string(),
-        device_desc: "desktop-macos".to_string(),
+        device_desc: device_desc.to_string(),
         device_id: device_id.clone(),
     };
 
