@@ -7,9 +7,10 @@ Tell your coding agent:
 A few seconds later a **native reMarkable notebook** (handwriting-editable,
 the yellow-icon kind, not a PDF) shows up on your tablet.
 
-`rr` is a small Rust CLI that takes any markdown or HTML, packages it as
-an EPUB, ships it to the reMarkable cloud's notebook converter, and
-exits. Agents drive it through a SKILL file that `rr` installs for
+`rr` is a small Rust CLI that turns markdown into a native v6 reMarkable
+notebook locally and uploads it via the device's own cloud sync API.
+**Works on any reMarkable account — Connect subscription is not
+required.** Agents drive it through a SKILL file that `rr` installs for
 Claude, OpenCode, and Codex.
 
 ---
@@ -40,24 +41,22 @@ In Claude / OpenCode / Codex, things like:
 - *"Push the Q2 plan to my reMarkable in the background."*
 
 The skill activates, the agent writes a clean markdown file, runs
-`rr upload`, and reports the document id. You pick up the tablet and the
+`rr push`, and reports the document id. You pick up the tablet and the
 document is already there, properly formatted, with real tables (more on
 that below), embedded images, and the title at the top.
 
 ### What the SKILL gets the agent to do
 
 Tables render as real grids because `rr` rasterizes markdown tables to
-PNG locally before upload. The reMarkable converter strips `<table>` and
-`<svg>` from EPUBs but passes through embedded images, so this is the
-only path that actually works. The agent doesn't have to know any of
-this; it writes a normal markdown table and the right thing happens.
+PNG locally and embeds them as image blocks directly inside the v6
+notebook page. Headings, paragraphs, and bullets ship as native typed
+text. Split a document into pages by writing `---` between sections.
 
 The SKILL also tells the agent to stay in Latin script (no fonts ship on
 the device for CJK, Devanagari, Arabic, Cyrillic, so anything else
-renders as tofu boxes), avoid emojis and `<pre>` ASCII art (the converter
-drops or mangles them), pick descriptive filenames with dates so you can
-find docs on the tablet, and use `--background` for long uploads so the
-chat stays responsive.
+renders as tofu boxes), avoid emojis and ASCII art (the typed-text
+engine drops or mangles them), and pick descriptive filenames with dates
+so you can find docs on the tablet.
 
 ---
 
@@ -97,15 +96,11 @@ cairo, no librsvg, no ImageMagick, no headless Chrome.
 
 ## Tables that look like tables
 
-This was the hard part. The reMarkable cloud's EPUB → notebook converter
-strips HTML structure aggressively. `<table>` rows flatten to plain text
-with bare `|` separators. `<pre>` whitespace collapses. Inline `<svg>`
-disappears entirely. After hours of probing the converter, the only
-thing it preserves verbatim is embedded raster images.
-
-So `rr` watches for markdown tables in the source, renders each one to a
-PNG locally, and embeds the PNG in the EPUB. The agent just writes
-ordinary markdown:
+The v6 typed-text engine on Paper Pro doesn't have a table primitive —
+just paragraphs and bullets. So `rr` watches for markdown tables in the
+source, renders each one to a PNG locally, and embeds the PNG as an
+image block in the page right below the typed text. The agent just
+writes ordinary markdown:
 
 ```markdown
 | Item | Quantity |   Price |
@@ -140,24 +135,18 @@ markdown table  ─── pulldown-cmark events ───►  rows + alignments
                                             1400×N PNG bytes
                                                   │
                                                   ▼
-                                <img src="table-001.png"> in EPUB
-                                + the PNG file under OEBPS/
+                          ImageRegistry + ImageItem block in the
+                          page's v6 stream (sibling .png on disk)
 ```
 
-About 250 lines all up (`src/markdown.rs::build_table_svg` plus
-`src/raster.rs`). Soft-wrapping happens before rasterization so long
-cells don't blow out the grid. Column widths fit the longest cell,
-capped at 1400px to match the reMarkable Paper Pro's reading area.
-Header rows get bold weight and a thicker underline.
-
-If rasterization fails for any reason `rr` falls back to bullet records
-(`**Pens** — Quantity: 3 — Price: $4.50`), which the converter handles
-fine. I haven't seen the fallback trigger in real use yet.
+Soft-wrapping happens before rasterization so long cells don't blow out
+the grid. Column widths fit the longest cell, capped at 1400px to match
+the reMarkable Paper Pro's reading area. Header rows get bold weight and
+a thicker underline.
 
 The same machinery is available for arbitrary diagrams: build the SVG
-yourself, pipe it through `rr::raster::svg_to_png`, embed the PNG. The
-plan is to wire this into XHTML input too so inline `<svg>` is
-auto-rasterized.
+yourself, pipe it through `rr::raster::svg_to_png`, and `rr` will embed
+the PNG as a page image.
 
 ---
 
@@ -171,34 +160,39 @@ rr status                # verify auth + cloud connectivity
 rr logout                # forget credentials
 ```
 
-### Uploading
+### Pushing
 
 ```bash
-rr upload notes.md                       # markdown → native reMarkable notebook
-rr upload report.html                    # XHTML → native reMarkable notebook
-rr upload doc.md --title "Custom Title"  # override inferred title
-rr upload doc.md --background            # detached job; returns immediately
+rr push notes.md                         # markdown → native v6 notebook
+rr push doc.md --title "Custom Title"    # override inferred title
+rr push doc.md --device paper-pro-move   # also: paper-pro (default), rm2
+rr push - --title "From stdin"           # read markdown from stdin
 ```
 
-Uploads land at the root of the device by default and use the cloud's
-EPUB → notebook conversion (the yellow-icon doc type that's
-handwriting-editable on the tablet).
+Pushes land at the root of the device and produce a native v6 notebook
+the device renders directly — no cloud-side conversion step. Split the
+markdown into multiple pages with `---` horizontal-rule lines.
 
-### Background jobs
+### Library management
 
 ```bash
-rr upload big-research.md --background
-# ✓ Background job 20260520143055-a3z8qp started.
-#   pid:  64812
-#   log:  ~/.../Application Support/rr/jobs/20260520143055-a3z8qp.log
-
-rr jobs                  # list all jobs (running + recent)
-rr logs <job-id>         # full log of a job
-rr cancel <job-id>       # SIGTERM the job
+rr ls                    # list documents in the cloud
+rr ls --folders          # only show folders
+rr mkdir "Work/2026"     # create a folder
+rr rm <doc-uuid>         # delete by id
 ```
 
-Useful when the agent is uploading something large and you don't want
-the chat hanging on EPUB build + network round-trip.
+All of these talk to the same sync v3 endpoints `push` uses, so they
+work on any reMarkable account — Connect not required.
+
+### Legacy: EPUB → cloud convert
+
+There's also a hidden `rr connect-push` command that builds an EPUB
+locally and posts it to the reMarkable cloud's EPUB → notebook converter
+(the original v0.2 pipeline). It's kept only as a fallback; `rr push`
+produces the same native notebook with no cloud-side conversion.
+`connect-push` is also the one with `--background` plus `rr jobs`,
+`rr logs`, `rr cancel` for detached uploads.
 
 ### Skill management
 
@@ -214,53 +208,61 @@ generating content.
 
 ---
 
-## What `rr` actually does
+## What `rr push` actually does
 
 ```
-your.md / your.html
+your.md
        │
-       │  rr parses + transforms
+       │  pulldown-cmark events → typed text + tables
        ▼
-  XHTML body fragment (+ embedded PNG/JPG/GIF assets)
+  RootText block (paragraphs / bullets / headings)
+  + per-table PNG → ImageRegistry + ImageItem blocks
        │
-       │  rr packages
+       │  rr writes binary v6 streams
        ▼
-  EPUB 3 zip
+  Per-page .rm v6 files + .metadata, .content, .pagedata
        │
-       │  POST /import/v1/files with rM-Meta.convert=true
+       │  SHA-256 content-address every blob
+       │  PUT /sync/v3/files/<hash>      (per blob)
+       │  PUT /sync/v3/files/<doc-index>
+       │  PUT /sync/v3/root              (412-retry on race)
        ▼
-reMarkable cloud — server-side notebook converter
-       │
-       ▼
-  Native .rm notebook on the device
+  Notebook appears on every paired device on next sync
 ```
 
-Same pipeline the official "Read on reMarkable" Chrome extension uses
-(reverse-engineered from its source maps), plus some extra work to make
-markdown look good on the device:
+The binary v6 format is the same one the device writes to its own
+filesystem, so the cloud has nothing to convert — it just stores and
+hands the blobs back to the tablet. That's why this path works without a
+Connect subscription: it's the same sync protocol every reMarkable
+device speaks to `internal.cloud.remarkable.com`.
 
-- Markdown tables are rasterized to PNG locally because the cloud
-  converter doesn't respect `<table>` or `<pre>` whitespace. Pipeline:
-  SVG → `usvg` → `resvg` → `tiny-skia` → PNG.
-- Local images (`![](images/x.png)`) are read off disk and embedded.
-- XHTML input is accepted directly for cases markdown can't express
-  (custom typography, structured sections). The `<body>` is extracted
-  and wrapped automatically.
+Some details:
+
+- Markdown tables are rasterized to PNG locally and embedded as v6 image
+  blocks. Pipeline: SVG → `usvg` → `resvg` → `tiny-skia` → PNG.
+- `--device {paper-pro|paper-pro-move|rm2}` picks the page dimensions
+  and text-frame geometry. Default is Paper Pro.
+- Splitting on `---` produces a multi-page notebook with one chunk per
+  page.
 
 See [`docs/formatting-guide.md`](docs/formatting-guide.md) for the full
-record of what survives the converter and what doesn't.
+record of what renders well on the device.
 
 ---
 
 ## Limitations
 
 - One-way. Local → cloud. No download path.
-- No update-in-place. Every upload creates a new document; re-uploading
-  the same source makes a duplicate. Delete the old one on the device
-  first.
-- No folders yet from the CLI. Uploads land at root. `rr ls`, `rr mkdir`,
-  and `rr rm` are stubbed pending Auth0 token support; the
-  device-pairing token we currently use doesn't satisfy those endpoints.
+- No update-in-place. Every push creates a new document; re-pushing the
+  same source makes a duplicate. Delete the old one first.
+- Pushes land at the root of the cloud library. `rr mkdir` creates
+  folders and `rr rm` removes documents, but `rr push` doesn't take a
+  `--folder` flag yet — move docs on the tablet, or fall back to
+  `rr connect-push --dir` which does support folder placement.
+- No inline emphasis. The v6 typed-text engine on Paper Pro doesn't have
+  inline bold/italic/code styling; the text arrives, just without the
+  styling. Code blocks, images embedded in markdown, and footnotes are
+  silently skipped today.
 - No native fonts for non-Latin scripts on the device. Anything outside
   Latin renders as tofu.
 
@@ -271,9 +273,10 @@ record of what survives the converter and what doesn't.
 Your reMarkable user token is stored locally at
 `~/Library/Application Support/rr/config.toml` (macOS) or
 `~/.config/rr/config.toml` (Linux), and mirrored to the OS keychain when
-possible. Uploads go directly to reMarkable's cloud
-(`web.<tectonic>.tectonic.remarkable.com`). Nothing else is contacted.
-No analytics, no telemetry, no third-party services.
+possible. Pushes go directly to reMarkable's cloud sync API at
+`internal.cloud.remarkable.com` — the same endpoint every reMarkable
+device talks to. Nothing else is contacted. No analytics, no telemetry,
+no third-party services.
 
 ---
 
@@ -287,7 +290,11 @@ MIT.
 
 - The reMarkable team for shipping a great device and a usable cloud
   API.
+- The [`rmscene`](https://github.com/ricklupton/rmscene) project, whose
+  reverse-engineering of the v6 binary format made the native pipeline
+  possible.
 - The "Read on reMarkable" Chrome extension for shipping source maps,
-  which made the reverse-engineering quick.
+  which sped up the original EPUB-pipeline reverse-engineering (now the
+  hidden `connect-push` fallback).
 - The `usvg` / `resvg` / `tiny-skia` crates — without them "tables to
   PNG" wouldn't be a 50-line module.
