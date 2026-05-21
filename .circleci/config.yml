@@ -67,12 +67,18 @@ commands:
           command: rustup target add << parameters.target >>
 
   package_target:
-    description: "Build, tarball, and checksum a single release target."
+    description: "Build, archive, and checksum a single release target."
     parameters:
       target: { type: string }
       builder:
         type: string
         default: cargo  # cargo | zigbuild
+      archive:
+        type: string
+        default: tar.gz  # tar.gz | zip
+      bin_ext:
+        type: string
+        default: ""  # "" for unix, ".exe" for windows
     steps:
       - run:
           name: build << parameters.target >>
@@ -89,16 +95,22 @@ commands:
             set -eu
             stage="rr-<< parameters.target >>"
             mkdir -p "dist/$stage"
-            cp "target/<< parameters.target >>/release/rr" "dist/$stage/"
+            cp "target/<< parameters.target >>/release/rr<< parameters.bin_ext >>" "dist/$stage/"
             cp -r skills "dist/$stage/"
             [ -f README.md ] && cp README.md "dist/$stage/" || true
             [ -f docs/formatting-guide.md ] && cp docs/formatting-guide.md "dist/$stage/" || true
-            tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+            if [ "<< parameters.archive >>" = "zip" ]; then
+              (cd dist && zip -qr "$stage.zip" "$stage")
+              archive_file="$stage.zip"
+            else
+              tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+              archive_file="$stage.tar.gz"
+            fi
             rm -rf "dist/$stage"
             if command -v sha256sum >/dev/null 2>&1; then
-              (cd dist && sha256sum "$stage.tar.gz" > "$stage.tar.gz.sha256")
+              (cd dist && sha256sum "$archive_file" > "$archive_file.sha256")
             else
-              (cd dist && shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256")
+              (cd dist && shasum -a 256 "$archive_file" > "$archive_file.sha256")
             fi
 
 jobs:
@@ -159,12 +171,23 @@ jobs:
           paths: ["*"]
 
   build_linux:
+    # Despite the name, this also cross-compiles the Windows target.
+    # cargo-zigbuild can target x86_64-pc-windows-gnu from the same Linux
+    # box (zig bundles a MinGW toolchain), so it's cheaper to build all
+    # non-macOS targets in one job than to spin up a Windows executor.
     executor: rust-linux
     steps:
       - checkout
       - update_rust
-      # zig + cargo-zigbuild let us cross-compile aarch64-linux from x86_64
-      # without a separate ARM runner or apt-install gcc-aarch64.
+      - run:
+          name: install zip (for windows archives)
+          command: |
+            set -eu
+            if ! command -v zip >/dev/null 2>&1; then
+              sudo apt-get update && sudo apt-get install -y zip
+            fi
+      # zig + cargo-zigbuild let us cross-compile aarch64-linux and
+      # windows-gnu from x86_64 Linux without separate runners.
       - run:
           name: install zig + cargo-zigbuild
           command: |
@@ -176,12 +199,18 @@ jobs:
             cargo install --locked cargo-zigbuild
       - install_rust_target: { target: x86_64-unknown-linux-gnu }
       - install_rust_target: { target: aarch64-unknown-linux-gnu }
+      - install_rust_target: { target: x86_64-pc-windows-gnu }
       - package_target:
           target: x86_64-unknown-linux-gnu
           builder: zigbuild
       - package_target:
           target: aarch64-unknown-linux-gnu
           builder: zigbuild
+      - package_target:
+          target: x86_64-pc-windows-gnu
+          builder: zigbuild
+          archive: zip
+          bin_ext: ".exe"
       - persist_to_workspace:
           root: dist
           paths: ["*"]
@@ -206,12 +235,12 @@ jobs:
             set -eu
             if gh release view "$CIRCLE_TAG" >/dev/null 2>&1; then
               gh release upload "$CIRCLE_TAG" \
-                dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS --clobber
+                dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS --clobber
             else
               gh release create "$CIRCLE_TAG" \
                 --title "rr $CIRCLE_TAG" \
                 --generate-notes \
-                dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS
+                dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS
             fi
 
 workflows:

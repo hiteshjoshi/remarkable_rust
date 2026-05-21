@@ -87,10 +87,34 @@ cd remarkable_rust
 | macOS    | Intel (`x86_64-apple-darwin`) | working |
 | Linux    | `x86_64-unknown-linux-gnu` | working |
 | Linux    | `aarch64-unknown-linux-gnu` | working |
-| Windows  | – | not yet (binary builds, but the `rr auth` flow is untested) |
+| Windows  | `x86_64-pc-windows-gnu` | binary builds + ships; `rr auth` flow tested via Git Bash / WSL, native PowerShell pairing is community-reported |
 
 The release binary is statically linked from pure-Rust dependencies. No
 cairo, no librsvg, no ImageMagick, no headless Chrome.
+
+### Windows install
+
+The bash installer above doesn't run on native Windows. Two options:
+
+**Option A — manual download (PowerShell or File Explorer):**
+
+1. Go to the [latest release page](https://github.com/hiteshjoshi/remarkable_rust/releases/latest).
+2. Download `rr-x86_64-pc-windows-gnu.zip`.
+3. Extract it. Inside is `rr.exe` and a `skills/` folder.
+4. Move `rr.exe` somewhere on your `PATH` (e.g. `%USERPROFILE%\bin\` after
+   adding that folder to PATH via *System Properties → Environment Variables*).
+5. From a new PowerShell window:
+
+   ```powershell
+   rr auth
+   rr skills --target all     # installs SKILL.md into ~/.claude, etc.
+   ```
+
+**Option B — WSL:** install the Linux binary inside WSL with the regular
+`curl | bash` one-liner. Agents running in WSL pick up the skill the
+same way.
+
+Verify with `rr --version` once it's on your PATH.
 
 ---
 
