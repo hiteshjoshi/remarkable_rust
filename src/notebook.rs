@@ -33,7 +33,24 @@ pub struct PageInput {
 }
 
 impl PageInput {
+    /// Build a single-page [`PageInput`] from markdown. GFM tables in the
+    /// source are extracted, rasterized to PNG, and embedded as images on
+    /// the page — the raw `| a | b |` lines never reach the typed-text
+    /// renderer (which would otherwise emit them as literal pipe-delimited
+    /// text, since the device's text engine has no concept of tables).
+    ///
+    /// Use [`Self::from_markdown_raw`] if you want the legacy "pass markdown
+    /// through verbatim" behavior, e.g. for callers that pre-strip tables
+    /// themselves.
     pub fn from_markdown(markdown: impl Into<String>) -> Self {
+        Self::from_markdown_with_tables(markdown)
+    }
+
+    /// Build a [`PageInput`] from markdown without any table handling. The
+    /// markdown is fed verbatim to the stroke renderer. Use this only if
+    /// you've already stripped or transformed tables yourself; otherwise
+    /// prefer [`Self::from_markdown`].
+    pub fn from_markdown_raw(markdown: impl Into<String>) -> Self {
         Self {
             markdown: markdown.into(),
             images: Vec::new(),
@@ -810,6 +827,73 @@ mod tests {
                 "content.json missing {needle}"
             );
         }
+    }
+
+    #[test]
+    fn from_markdown_extracts_tables_as_images() {
+        // The supern /convert call shape: a single-page bundle built from
+        // markdown that contains a GFM table. Tables MUST be rasterized to
+        // PNG images on the page; the pipe-delimited source lines MUST
+        // NOT leak into the typed-text stream.
+        let md = "# Title\n\n\
+                  | Col A | Col B |\n\
+                  | ----- | ----- |\n\
+                  | 1     | 2     |\n\n\
+                  More text after the table.";
+        let page = PageInput::from_markdown(md);
+
+        // At least one PNG image was produced for the table.
+        assert_eq!(page.images.len(), 1, "expected one image for one table");
+        let img = &page.images[0];
+        assert_eq!(
+            &img.png_bytes[0..8],
+            b"\x89PNG\r\n\x1a\n",
+            "image bytes must be a real PNG"
+        );
+        assert!(img.w > 0.0 && img.h > 0.0, "image needs positive size");
+
+        // The stroke-text path must not see any of the table source.
+        assert!(
+            !page.markdown.contains("Col A"),
+            "table header leaked into typed text: {:?}",
+            page.markdown
+        );
+        assert!(
+            !page.markdown.contains("---"),
+            "table delimiter leaked into typed text: {:?}",
+            page.markdown
+        );
+        assert!(
+            !page.markdown.contains("| 1"),
+            "table data row leaked into typed text: {:?}",
+            page.markdown
+        );
+
+        // Surrounding prose still flows through.
+        assert!(page.markdown.contains("Title"));
+        assert!(page.markdown.contains("More text after the table."));
+
+        // And the whole thing assembles into a valid v6 bundle.
+        let opts = BundleOptions::new("TableTest", vec![page]);
+        let bundle = Bundle::build(&opts).unwrap();
+        assert_eq!(bundle.pages.len(), 1);
+        assert_eq!(
+            bundle.pages[0].images.len(),
+            1,
+            "image must travel through to the bundle page"
+        );
+        crate::v6::parse(&bundle.pages[0].rm_bytes).expect("page rm parses");
+    }
+
+    #[test]
+    fn from_markdown_raw_preserves_table_source() {
+        // Escape hatch: callers that want the old "no table extraction"
+        // behavior can opt in. The markdown is forwarded verbatim and no
+        // images are attached.
+        let md = "| A | B |\n| - | - |\n| 1 | 2 |\n";
+        let page = PageInput::from_markdown_raw(md);
+        assert!(page.images.is_empty());
+        assert_eq!(page.markdown, md);
     }
 
     #[test]
