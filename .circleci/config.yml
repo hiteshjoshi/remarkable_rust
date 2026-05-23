@@ -98,6 +98,7 @@ commands:
             cp "target/<< parameters.target >>/release/rr<< parameters.bin_ext >>" "dist/$stage/"
             cp -r skills "dist/$stage/"
             [ -f README.md ] && cp README.md "dist/$stage/" || true
+            [ -f LICENSE ] && cp LICENSE "dist/$stage/" || true
             [ -f docs/formatting-guide.md ] && cp docs/formatting-guide.md "dist/$stage/" || true
             if [ "<< parameters.archive >>" = "zip" ]; then
               (cd dist && zip -qr "$stage.zip" "$stage")
