@@ -123,47 +123,86 @@ impl PageInput {
             }
         }
 
-        // Pass 2: strip table source from the markdown so the typed-text
-        // path doesn't render `| ... | ... |` lines as literal text.
-        // A table in GFM starts with a header row containing pipes and is
-        // followed by a delimiter row of dashes (`|---|---|`). We drop
-        // the entire run by scanning lines.
-        let stripped = strip_table_lines(&original);
-
-        // Estimate how far down the text region extends, so we can drop
-        // images right after it instead of overlapping. The numbers below
-        // are coarse: ~50 chars per line at width=936, ~52 device-units
-        // per line height. Headings add a bit extra. Pages with little
-        // text get tables high up; text-heavy pages get them low.
-        let text_height_estimate = estimate_text_height(&stripped);
-        let first_image_y = (234.0 + text_height_estimate + 80.0).max(280.0);
-
-        // Render each table to PNG. Page coord origin is page-centre.
-        // MAX_W matches what's expected later in `Bundle::build` when the
-        // bundle's `device` is known; this default fits Paper Pro and is
-        // tightened per-device downstream if needed.
-        let mut images = Vec::new();
-        let mut y_cursor: f32 = first_image_y;
+        // Pass 1.5: rasterize each table now, so its rendered height is
+        // known *before* deciding how the surrounding text should flow.
+        // Page coord origin is page-centre. MAX_W matches what's expected
+        // later in `Bundle::build` when the bundle's `device` is known;
+        // this default fits Paper Pro and is tightened per-device
+        // downstream if needed.
         const MAX_W: f32 = 900.0;
-        for (aligns, rows) in tables {
-            let svg = crate::markdown::build_table_svg(&rows, &aligns);
-            let Ok(png) = crate::raster::svg_to_png(&svg) else {
-                continue;
-            };
-            let (w_px, h_px) = png_dimensions(&png).unwrap_or((900, 240));
-            let scale = (MAX_W / w_px as f32).min(1.0);
-            let w = (w_px as f32) * scale;
-            let h = (h_px as f32) * scale;
+        struct RenderedTable {
+            png_bytes: Vec<u8>,
+            w: f32,
+            h: f32,
+        }
+        let rendered: Vec<Option<RenderedTable>> = tables
+            .iter()
+            .map(|(aligns, rows)| {
+                let svg = crate::markdown::build_table_svg(rows, aligns);
+                let png = crate::raster::svg_to_png(&svg).ok()?;
+                let (w_px, h_px) = png_dimensions(&png).unwrap_or((900, 240));
+                let scale = (MAX_W / w_px as f32).min(1.0);
+                Some(RenderedTable {
+                    w: (w_px as f32) * scale,
+                    h: (h_px as f32) * scale,
+                    png_bytes: png,
+                })
+            })
+            .collect();
+        // Same proportional gap used for stacking tables, reused here as
+        // how much extra clearance to reserve below the table too. (A
+        // floor bump to 90 was tried 2026-07-15 to paper over residual
+        // clipping into the next heading, but made no visible difference —
+        // the real cause was `line_height_estimate` under-counting heading
+        // height by more than 2x, fixed below. Reverted to this smaller,
+        // now-adequate floor rather than keep an unexplained magic number.)
+        let gap = |h: f32| (h * 0.15).max(40.0);
+        let reserved_heights: Vec<f32> = rendered
+            .iter()
+            .map(|r| r.as_ref().map(|r| r.h + gap(r.h)).unwrap_or(0.0))
+            .collect();
+
+        // Pass 2: strip table source from the markdown so the typed-text
+        // path doesn't render `| ... | ... |` lines as literal text, AND
+        // reserve equivalent vertical space via real blank lines so text
+        // that follows a table in the source doesn't render through/under
+        // its image — the device's text engine lays out text as one
+        // continuous flow with no concept of an out-of-band image
+        // occupying space, so removing a table's lines without reserving
+        // something in their place just lets later text flow straight
+        // through where the image will be drawn. Also records how much
+        // *preceding* text-height (now including those reserved gaps) each
+        // table has, so each table is positioned just below its own place
+        // in the source rather than below the whole document. (Confirmed
+        // live on-device 2026-07-15, in two stages: first, a global
+        // whole-document height estimate pushed every table toward the
+        // very end, overlapping unrelated later sections; after fixing
+        // that, tables landed at the right *starting* position but later
+        // text still rendered through them, because no space was reserved
+        // for the image itself.)
+        let (stripped, table_text_heights) =
+            strip_table_lines_with_heights(&original, &reserved_heights);
+
+        let mut images = Vec::new();
+        let mut y_cursor: f32 = 280.0;
+        for (idx, r) in rendered.into_iter().enumerate() {
+            let Some(r) = r else { continue };
+            // This table's own position, from the text-height (including
+            // reserved gaps for any earlier tables) accumulated before it
+            // in the source...
+            let height_before = table_text_heights.get(idx).copied().unwrap_or(0.0);
+            let text_based_y = (234.0 + height_before + 80.0).max(280.0);
+            // ...but never above the bottom of the previous table's image,
+            // as a safety net on top of the reserved-space accounting above.
+            let y = text_based_y.max(y_cursor);
             images.push(PageImageInput {
-                png_bytes: png,
-                x: -w / 2.0,
-                y: y_cursor,
-                w,
-                // Gap proportional to image height — keeps stacked tables
-                // visually balanced regardless of size.
-                h,
+                png_bytes: r.png_bytes,
+                x: -r.w / 2.0,
+                y,
+                w: r.w,
+                h: r.h,
             });
-            y_cursor += h + (h * 0.15).max(40.0);
+            y_cursor = y + r.h + gap(r.h);
         }
 
         Self {
@@ -203,35 +242,78 @@ fn split_on_hr(md: &str) -> Vec<String> {
     out
 }
 
-/// Coarse text-height estimate in device units. Used to position images
-/// just below the text region instead of overlapping it. We approximate:
-/// ~50 chars per body line at the default font, ~52 units of line height,
-/// ~70 units extra for each heading line.
-fn estimate_text_height(md: &str) -> f32 {
-    let mut total: f32 = 0.0;
-    for line in md.lines() {
-        let t = line.trim();
-        if t.is_empty() {
-            total += 20.0;
-            continue;
-        }
-        let is_heading = t.starts_with('#');
-        let chars = t.chars().count();
-        let wrapped_lines = ((chars as f32 / 50.0).ceil()).max(1.0);
-        let per_line = if is_heading { 70.0 } else { 52.0 };
-        total += wrapped_lines * per_line;
+/// Coarse per-line text-height estimate in device units, used by
+/// [`strip_table_lines_with_heights`] to position each table's image just
+/// below the text that precedes it in the source.
+///
+/// Per-paragraph-style heights are sourced from rmc's SVG exporter
+/// (`LINE_HEIGHTS` in
+/// https://github.com/ricklupton/rmc/blob/main/src/rmc/exporters/svg.py —
+/// the same author as `rmscene`, and the only place in the public v6
+/// reverse-engineering record with real, working numbers for this).
+/// Confirmed 2026-07-15 that this codebase's prior guess (70 for headings)
+/// was over 2x too low against rmc's real HEADING=150 — that mismatch was
+/// the actual cause of tables clipping into the heading immediately after
+/// them, not a wrong constant multiplier on the reserved gap (tried and
+/// made no difference). Classifies lines the same way `v6::markdown`
+/// assigns `ParagraphStyle` (heading via `#`, bullet via `- `/`* ` at any
+/// indent — Bullet and Bullet2 share the same rmc height, so depth doesn't
+/// need distinguishing here). Character-wrapping (~50 chars/line) has no
+/// sourced value anywhere in rmscene/rmc/the Kaitai spec — still an
+/// unvalidated heuristic, not touched by this fix.
+fn line_height_estimate(line: &str) -> f32 {
+    const HEADING: f32 = 150.0; // ParagraphStyle::Heading
+    const PLAIN: f32 = 70.0; // ParagraphStyle::Plain / Bold
+    const BULLET: f32 = 35.0; // ParagraphStyle::Bullet / Bullet2 / Checkbox*
+    const BLANK: f32 = 20.0; // no sourced value; unchanged pending evidence
+
+    let t = line.trim();
+    if t.is_empty() {
+        return BLANK;
     }
-    total
+    let is_heading = t.starts_with('#');
+    let is_bullet = t.starts_with("- ") || t.starts_with("* ");
+    let per_line = if is_heading {
+        HEADING
+    } else if is_bullet {
+        BULLET
+    } else {
+        PLAIN
+    };
+    let chars = t.chars().count();
+    let wrapped_lines = ((chars as f32 / 50.0).ceil()).max(1.0);
+    wrapped_lines * per_line
 }
 
 /// Remove GFM table source lines from a markdown string so the typed-text
-/// path doesn't render them as literal pipe-separated text. A table is a
-/// run of contiguous lines where the second line matches the delimiter
-/// pattern (`| --- | --- |`); we drop the header line, the delimiter,
-/// and all following data rows that look table-shaped.
-fn strip_table_lines(md: &str) -> String {
+/// path doesn't render them as literal pipe-separated text; replace each
+/// removed table with enough blank lines to reserve roughly
+/// `reserved_heights[n]` device-units of vertical space in the text flow
+/// (so later text doesn't render through/under that table's image — see
+/// the caller's comment in [`PageInput::from_markdown_with_tables`]).
+/// Also returns the running text-height estimate (see
+/// [`line_height_estimate`]) accumulated *before* each table, including
+/// any reservations from earlier tables — one entry per table, in source
+/// order. A table is a run of contiguous lines where the second line
+/// matches the delimiter pattern (`| --- | --- |`); we drop the header
+/// line, the delimiter, and all following data rows that look table-shaped.
+fn strip_table_lines_with_heights(md: &str, reserved_heights: &[f32]) -> (String, Vec<f32>) {
+    // NOT literal blank lines: confirmed 2026-07-15 that `v6::markdown`'s
+    // own encoder drops every empty paragraph before rendering
+    // (`paragraphs.retain(|p| !p.text.is_empty())`), so inserting `\n\n`
+    // reserves zero real space on the device -- it silently vanishes.
+    // Each reservation line instead carries a single zero-width space
+    // (U+200B): non-empty (survives that filter), effectively invisible on
+    // the page, and gets classified/rendered as an ordinary Plain
+    // paragraph (70 units, per line_height_estimate/rmc's LINE_HEIGHTS),
+    // which is what RESERVE_LINE_HEIGHT below must match.
+    const RESERVE_LINE_PLACEHOLDER: &str = "\u{200B}";
+    const RESERVE_LINE_HEIGHT: f32 = 70.0; // PLAIN, matches line_height_estimate
     let lines: Vec<&str> = md.lines().collect();
     let mut out = String::with_capacity(md.len());
+    let mut heights = Vec::new();
+    let mut running_height: f32 = 0.0;
+    let mut table_idx = 0;
     let mut i = 0;
     let is_delim = |line: &str| {
         let t = line.trim();
@@ -247,18 +329,38 @@ fn strip_table_lines(md: &str) -> String {
         // A table appears as: header line (with pipes), delim line, then
         // zero or more data rows. Detect by peeking the next line.
         if i + 1 < lines.len() && lines[i].contains('|') && is_delim(lines[i + 1]) {
+            // This table starts after `running_height` of preceding text.
+            heights.push(running_height);
             // Skip the header + delim + every following table-shaped row.
             i += 2;
             while i < lines.len() && looks_like_row(lines[i]) {
                 i += 1;
             }
+            // Reserve this table's image footprint in the text flow using
+            // real (non-empty) placeholder paragraphs -- see the constants'
+            // doc comment above for why literal blank lines don't work.
+            // Each placeholder needs a blank line after it so it becomes
+            // its own paragraph rather than soft-line-wrapping into one
+            // shared paragraph with its neighbors (`v6::markdown` joins
+            // consecutive non-blank-separated lines with a space, which
+            // would collapse N placeholders into a single 70-unit
+            // paragraph instead of N of them).
+            let reserve = reserved_heights.get(table_idx).copied().unwrap_or(0.0);
+            let reserve_lines = (reserve / RESERVE_LINE_HEIGHT).ceil().max(0.0) as usize;
+            for _ in 0..reserve_lines {
+                out.push_str(RESERVE_LINE_PLACEHOLDER);
+                out.push_str("\n\n");
+            }
+            running_height += reserve_lines as f32 * RESERVE_LINE_HEIGHT;
+            table_idx += 1;
             continue;
         }
         out.push_str(lines[i]);
         out.push('\n');
+        running_height += line_height_estimate(lines[i]);
         i += 1;
     }
-    out
+    (out, heights)
 }
 
 /// Parse the 8-byte PNG signature + 13-byte IHDR chunk to extract width
@@ -793,6 +895,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn line_height_estimate_matches_sourced_paragraph_styles() {
+        // Regression test for a real bug found 2026-07-15: this codebase's
+        // prior guess for heading height (70) was more than 2x too low
+        // against rmc's real, sourced LINE_HEIGHTS (HEADING=150) -- see the
+        // doc comment on line_height_estimate for the citation. That
+        // mismatch, not the reserved-gap multiplier (tried and made no
+        // difference), was the actual cause of tables clipping into the
+        // heading immediately following them.
+        assert_eq!(line_height_estimate("# Heading"), 150.0);
+        assert_eq!(line_height_estimate("## Also a heading"), 150.0);
+        assert_eq!(line_height_estimate("Plain paragraph text"), 70.0);
+        assert_eq!(line_height_estimate("- Top-level bullet"), 35.0);
+        assert_eq!(line_height_estimate("  - Nested bullet"), 35.0);
+        assert_eq!(line_height_estimate(""), 20.0);
+        assert_eq!(line_height_estimate("   "), 20.0);
+    }
+
+    #[test]
     fn page_idx_label_increments() {
         assert_eq!(page_idx_label(0), "ba");
         assert_eq!(page_idx_label(1), "bb");
@@ -912,6 +1032,122 @@ mod tests {
             "image must travel through to the bundle page"
         );
         crate::v6::parse(&bundle.pages[0].rm_bytes).expect("page rm parses");
+    }
+
+    #[test]
+    fn table_removal_reserves_space_for_its_image() {
+        // Regression test for a real bug found 2026-07-15, in two stages:
+        // (a) a table's lines were stripped from the text flow with NO
+        // space reserved in their place, so text after the table kept
+        // rendering straight through/under the table's image on-device;
+        // (b) the first fix reserved space via literal blank lines, but
+        // `v6::markdown` drops every empty paragraph before rendering
+        // (`paragraphs.retain(|p| !p.text.is_empty())`), so those blank
+        // lines reserved *zero* real space -- confirmed live on-device,
+        // where a second table's overlap with the heading after it
+        // persisted even though the first table (needing no prior
+        // reservation) rendered correctly. Fixed by reserving space with
+        // non-empty zero-width-space placeholder paragraphs instead, which
+        // survive that filter and actually consume real height.
+        let md = "# Title\n\n\
+                   | Col A | Col B |\n\
+                   | ----- | ----- |\n\
+                   | 1     | 2     |\n\n\
+                   Text right after the table.";
+        let page = PageInput::from_markdown(md);
+        assert_eq!(page.images.len(), 1);
+        let h = page.images[0].h;
+        let expected_gap = (h * 0.15_f32).max(40.0);
+        let expected_reserve_lines = ((h + expected_gap) / 70.0_f32).ceil() as usize;
+
+        let between = page
+            .markdown
+            .split("Text right after the table.")
+            .next()
+            .unwrap()
+            .rsplit("Title")
+            .next()
+            .unwrap();
+        let placeholder_count = between.matches('\u{200B}').count();
+        assert!(
+            placeholder_count >= expected_reserve_lines,
+            "expected at least {expected_reserve_lines} reserved placeholder paragraphs for a \
+             {h}-tall image, found {placeholder_count} between the heading and following text: {:?}",
+            page.markdown
+        );
+        // Each placeholder must be its own paragraph (blank-line-separated
+        // from its neighbors), not soft-wrapped together into one -- a
+        // paragraph with N placeholders joined by spaces would only cost
+        // one 70-unit paragraph instead of N of them.
+        assert!(
+            !between.contains("\u{200B} \u{200B}") && !between.contains("\u{200B}\u{200B}"),
+            "placeholders must not have merged into a single paragraph: {:?}",
+            page.markdown
+        );
+    }
+
+    #[test]
+    fn table_position_ignores_trailing_text() {
+        // Regression test for a real bug found 2026-07-15: a table's image
+        // was positioned using the ENTIRE document's estimated text height,
+        // so a table appearing early in a long, multi-section document got
+        // pushed toward/past the very end and overlapped unrelated later
+        // content. A table's position must depend only on the text that
+        // precedes it in the source, not on what comes after.
+        let mut md = String::from(
+            "# Title\n\n\
+             | Col A | Col B |\n\
+             | ----- | ----- |\n\
+             | 1     | 2     |\n\n",
+        );
+        // A lot of trailing text -- enough that the OLD whole-document
+        // estimate would have pushed the image well past y=1000.
+        for i in 0..40 {
+            md.push_str(&format!(
+                "Paragraph {i} of trailing content, unrelated to the table.\n\n"
+            ));
+        }
+
+        let page = PageInput::from_markdown(&md);
+        assert_eq!(page.images.len(), 1);
+        let y = page.images[0].y;
+        // Expected: 234 (anchor) + 150 (heading, sourced from rmc's
+        // LINE_HEIGHTS) + 20 (blank line) + 80 = 484. Generous upper bound
+        // below -- the point of this test is that trailing content (which
+        // would push y well past 1000 under the old whole-document-estimate
+        // bug) has no effect, not pinning the exact constant.
+        assert!(
+            y < 600.0,
+            "table image should sit just below the heading that precedes it \
+             (heading + one blank line), not be pushed down by trailing text; got y={y}"
+        );
+    }
+
+    #[test]
+    fn stacked_tables_do_not_overlap() {
+        // Two tables close together in the source (e.g. back-to-back domain
+        // sections separated only by a heading) must not overlap each
+        // other, even though each is now positioned from its own local
+        // text-height rather than a single shared cursor.
+        let md = "### First\n\n\
+                   | A | B |\n\
+                   | - | - |\n\
+                   | 1 | 2 |\n\n\
+                   ### Second\n\n\
+                   | C | D |\n\
+                   | - | - |\n\
+                   | 3 | 4 |\n";
+        let page = PageInput::from_markdown(md);
+        assert_eq!(page.images.len(), 2);
+        let first = &page.images[0];
+        let second = &page.images[1];
+        assert!(
+            second.y >= first.y + first.h,
+            "second table (y={}) must start at or below the bottom of the first (y={}, h={})",
+            second.y,
+            first.y,
+            first.h
+        );
     }
 
     #[test]
