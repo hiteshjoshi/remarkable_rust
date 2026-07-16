@@ -44,6 +44,7 @@ use crate::error::{Error, Result};
 use crate::notebook::Bundle;
 
 const SYNC_HOST: &str = "https://internal.cloud.remarkable.com";
+const SIGNED_UPLOAD_HOST_SUFFIXES: &[&str] = &[".googleapis.com", ".amazonaws.com"];
 
 fn root_url() -> String {
     format!("{SYNC_HOST}/sync/v3/root")
@@ -371,11 +372,15 @@ impl SyncClient {
     /// These URLs reject our `rm-*` headers, so we send only `x-goog-hash`
     /// for CRC32C verification when the URL is GCS.
     async fn put_to_signed_url(&self, url: &str, data: &[u8]) -> Result<()> {
-        let mut req = self.http.put(url).body(data.to_vec());
+        let url = validate_signed_upload_url(url)?;
+        let mut req = self.http.put(url.clone()).body(data.to_vec());
         // GCS uses x-goog-hash and respects nothing else from our custom
         // header set. S3-style signed URLs (if reMarkable ever switches)
         // tolerate it being absent.
-        if url.contains("googleapis.com") || url.contains("storage.googleapis") {
+        if url
+            .host_str()
+            .is_some_and(|host| host.ends_with(".googleapis.com"))
+        {
             req = req.header("x-goog-hash", format!("crc32c={}", crc32c_base64(data)));
         }
         let resp = req.send().await.map_err(Error::Network)?;
@@ -519,6 +524,33 @@ impl SyncClient {
         }
         unreachable!()
     }
+}
+
+fn validate_signed_upload_url(raw: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| Error::InvalidResponse(format!("invalid signed upload URL: {e}")))?;
+    if url.scheme() != "https" {
+        return Err(Error::InvalidResponse(
+            "signed upload URL must use HTTPS".into(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(Error::InvalidResponse(
+            "signed upload URL contains forbidden credentials or fragment".into(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::InvalidResponse("signed upload URL has no host".into()))?;
+    if !SIGNED_UPLOAD_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+    {
+        return Err(Error::InvalidResponse(format!(
+            "signed upload URL host is not approved: {host}"
+        )));
+    }
+    Ok(url)
 }
 
 /// What the root-update PUT returned.
@@ -893,4 +925,15 @@ mod tests {
         assert!(files_url("abc").starts_with(SYNC_HOST));
         assert!(files_url("abc").ends_with("/abc"));
     }
+}
+#[test]
+fn signed_upload_url_requires_approved_https_host() {
+    assert!(validate_signed_upload_url(
+        "https://storage.googleapis.com/bucket/object?signature=test"
+    )
+    .is_ok());
+    assert!(validate_signed_upload_url("http://storage.googleapis.com/bucket/object").is_err());
+    assert!(validate_signed_upload_url("https://127.0.0.1/object").is_err());
+    assert!(validate_signed_upload_url("https://example.com/object").is_err());
+    assert!(validate_signed_upload_url("https://user@example.amazonaws.com/object").is_err());
 }

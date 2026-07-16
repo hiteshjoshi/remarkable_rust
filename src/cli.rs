@@ -403,7 +403,7 @@ async fn handle_auth(manual_token: Option<String>) -> Result<()> {
     let tokens = crate::device_auth::authenticate_terminal()
         .await
         .context("device pairing")?;
-    let _ = crate::token_store::save_tokens_debug(&tokens);
+    config::delete_legacy_tokens()?;
     let tectonic = crate::device_auth::extract_tectonic_claim(&tokens.user_token);
     let expires_at = config::jwt_expiry(&tokens.user_token);
 
@@ -783,6 +783,7 @@ fn handle_logout() -> Result<()> {
     cfg.auth = None;
     cfg.save()?;
     let _ = config::delete_token_secure();
+    config::delete_legacy_tokens()?;
     println!("{} Logged out.", "✓".green());
     Ok(())
 }

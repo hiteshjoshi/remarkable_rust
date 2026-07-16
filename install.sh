@@ -87,15 +87,13 @@ verify_checksum() {
     local expected
     expected=$(grep -E "[[:space:]]${archive_name}\$" "$checksum_file" | awk '{print $1}' | head -1)
     if [ -z "$expected" ]; then
-        warn "No checksum entry for $archive_name; skipping verification."
-        return 0
+        error "No checksum entry for $archive_name; refusing to install."
     fi
 
     local actual
     actual=$(sha256_of "$archive")
     if [ -z "$actual" ]; then
-        warn "No sha256sum/shasum available; skipping verification."
-        return 0
+        error "No SHA-256 tool is available; refusing to install."
     fi
 
     if [ "$expected" != "$actual" ]; then
@@ -214,9 +212,8 @@ main() {
             error "Download failed. The release may not exist yet for your platform."
         fi
 
-        # Best-effort checksum verification: prefer the combined SHA256SUMS,
-        # fall back to the per-archive .sha256 file. If neither exists in
-        # the release, continue with a warning so older releases still work.
+        # Verification is mandatory: prefer the combined SHA256SUMS and
+        # fall back to the per-archive checksum for older releases.
         local sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
         local per_url="${download_url}.sha256"
         if download "$sums_url" "$tmp_dir/SHA256SUMS" 2>/dev/null; then
@@ -224,7 +221,7 @@ main() {
         elif download "$per_url" "$tmp_dir/${archive}.sha256" 2>/dev/null; then
             verify_checksum "$tmp_dir/$archive" "$tmp_dir/${archive}.sha256"
         else
-            warn "No checksum file in release; skipping integrity check."
+            error "No checksum file is available for $archive; refusing to install."
         fi
 
         # Extract

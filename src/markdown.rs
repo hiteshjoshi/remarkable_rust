@@ -6,7 +6,7 @@
 //! no `<script>` — so the cloud's notebook converter handles it cleanly.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use pulldown_cmark::{html, Alignment, CowStr, Event, Options, Parser, Tag, TagEnd};
 
@@ -659,12 +659,19 @@ fn resolve_local_image(src: &str, base_dir: Option<&Path>) -> Option<(Vec<u8>, S
     if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:") {
         return None;
     }
-    let path = if Path::new(src).is_absolute() {
-        PathBuf::from(src)
-    } else {
-        base_dir?.join(src)
-    };
+    let source_path = Path::new(src);
+    if source_path.is_absolute() {
+        return None;
+    }
+    let canonical_base = base_dir?.canonicalize().ok()?;
+    let path = canonical_base.join(source_path).canonicalize().ok()?;
+    if !path.starts_with(&canonical_base) || !path.is_file() {
+        return None;
+    }
     let bytes = std::fs::read(&path).ok()?;
+    if bytes.len() > 10 * 1024 * 1024 {
+        return None;
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -857,5 +864,27 @@ mod tests {
         assert_eq!(rendered.assets.len(), 1);
         assert_eq!(rendered.assets[0].mime, "image/png");
         assert!(rendered.xhtml.contains("img-001.png"));
+    }
+
+    #[test]
+    fn image_outside_source_directory_is_not_embedded() {
+        let parent = tempfile::tempdir().unwrap();
+        let source = parent.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(parent.path().join("secret.png"), b"placeholder secret").unwrap();
+        let rendered = render_markdown("![secret](../secret.png)", Some(&source));
+        assert!(rendered.assets.is_empty());
+        assert!(rendered.xhtml.contains("[image: secret]"));
+    }
+
+    #[test]
+    fn absolute_image_path_is_not_embedded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("secret.png");
+        std::fs::write(&image, b"placeholder secret").unwrap();
+        let markdown = format!("![secret]({})", image.display());
+        let rendered = render_markdown(&markdown, Some(tmp.path()));
+        assert!(rendered.assets.is_empty());
+        assert!(rendered.xhtml.contains("[image: secret]"));
     }
 }

@@ -13,7 +13,9 @@
 //! expires_at   = 1779232253
 //! ```
 
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -61,11 +63,10 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         let path = config_path()?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create config dir {:?}", parent))?;
+            create_private_dir(parent)?;
         }
         let raw = toml::to_string_pretty(self).context("serialize config")?;
-        std::fs::write(&path, raw).with_context(|| format!("write config {:?}", path))
+        write_private_file(&path, raw.as_bytes())
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -118,6 +119,52 @@ impl Config {
             Some(exp) => chrono::Utc::now().timestamp() + 300 >= exp,
             None => true,
         }
+    }
+}
+
+fn create_private_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("create config dir {:?}", path))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("secure config dir {:?}", path))?;
+    }
+    Ok(())
+}
+
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("open config {:?}", path))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("secure config {:?}", path))?;
+    }
+    file.write_all(contents)
+        .with_context(|| format!("write config {:?}", path))?;
+    file.sync_all()
+        .with_context(|| format!("sync config {:?}", path))
+}
+
+pub fn delete_legacy_tokens() -> Result<()> {
+    let Some(base) = dirs::config_dir() else {
+        return Ok(());
+    };
+    let path = base.join(APP_NAME).join("tokens.json");
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("delete legacy tokens {:?}", path)),
     }
 }
 
@@ -190,4 +237,30 @@ pub fn jwt_expiry(token: &str) -> Option<i64> {
         .ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     value.get("exp").and_then(|v| v.as_i64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn private_storage_enforces_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("rr");
+        create_private_dir(&dir).unwrap();
+        let file = dir.join("config.toml");
+        write_private_file(&file, b"placeholder = true\n").unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }
