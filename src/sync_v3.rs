@@ -519,6 +519,84 @@ impl SyncClient {
         }
         unreachable!()
     }
+
+    /// Soft-delete a document or folder via sync v3 — works on any paired
+    /// account, unlike the legacy `/doc/v2/files` delete which needs
+    /// Connect-tier scopes. Sets `deleted: true` in the item's `.metadata`
+    /// blob and republishes the doc and root indexes.
+    pub async fn delete_document(&self, doc_id: &str) -> Result<String> {
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 0..MAX_ATTEMPTS {
+            let root = self.load_root().await?;
+            let entry = root
+                .entries
+                .iter()
+                .find(|e| e.id == doc_id)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::InvalidResponse(format!("no item with id {doc_id} in root index"))
+                })?;
+
+            let doc_index_body = self
+                .get_blob(&entry.hash, &format!("{doc_id}.docSchema"))
+                .await?;
+            let (schema, mut doc_entries) = parse_index(&doc_index_body)?;
+            let meta_idx = doc_entries
+                .iter()
+                .position(|e| e.id.ends_with(".metadata"))
+                .ok_or_else(|| {
+                    Error::InvalidResponse(format!("doc {doc_id} has no .metadata entry"))
+                })?;
+            let meta_id = doc_entries[meta_idx].id.clone();
+            let meta_bytes = self.get_blob(&doc_entries[meta_idx].hash, &meta_id).await?;
+
+            // Flip the deleted flag, preserving every other metadata field.
+            let mut meta: serde_json::Value = serde_json::from_slice(&meta_bytes)
+                .map_err(|e| {
+                    Error::InvalidResponse(format!("decode metadata for {doc_id}: {e}"))
+                })?;
+            meta["deleted"] = serde_json::Value::Bool(true);
+            let new_meta = serde_json::to_vec_pretty(&meta)?;
+            let new_meta_hash = sha256_hex(&new_meta);
+            self.put_blob(&new_meta_hash, &new_meta, &meta_id).await?;
+            doc_entries[meta_idx].hash = new_meta_hash;
+            doc_entries[meta_idx].size = new_meta.len() as u64;
+
+            // Republish the doc index, then the root index, then swap the pointer.
+            let doc_body = serialize_index(schema, doc_id, &doc_entries, false);
+            let doc_index_hash = hash_index(schema, &doc_entries, &doc_body)?;
+            self.put_blob(&doc_index_hash, &doc_body, &format!("{doc_id}.docSchema"))
+                .await?;
+
+            let total_size: u64 = doc_entries.iter().map(|e| e.size).sum();
+            let new_entry = IndexEntry {
+                hash: doc_index_hash.clone(),
+                id: doc_id.to_string(),
+                subfiles: doc_entries.len() as u32,
+                size: total_size,
+            };
+            let new_root_entries = replace_or_append(root.entries.clone(), new_entry);
+            let root_body = serialize_index(root.schema, ".", &new_root_entries, true);
+            let new_root_hash = hash_index(root.schema, &new_root_entries, &root_body)?;
+            self.put_blob(&new_root_hash, &root_body, "root.docSchema")
+                .await?;
+
+            match self.update_root(&new_root_hash, root.generation).await? {
+                UpdateRootOutcome::Updated { new_generation } => {
+                    return Ok(format!("{doc_id} (root gen {new_generation})"));
+                }
+                UpdateRootOutcome::GenerationRace if attempt + 1 < MAX_ATTEMPTS => {
+                    continue;
+                }
+                UpdateRootOutcome::GenerationRace => {
+                    return Err(Error::Other(
+                        "root generation race after 3 retries — try again".into(),
+                    ));
+                }
+            }
+        }
+        unreachable!()
+    }
 }
 
 /// What the root-update PUT returned.

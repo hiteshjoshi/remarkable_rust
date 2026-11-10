@@ -698,20 +698,12 @@ async fn handle_mkdir(name: String, parent: Option<String>) -> Result<()> {
 }
 
 async fn handle_rm(id: String) -> Result<()> {
-    let (_cfg, client) = cloud_client().await?;
-    let files = client.list_files(false).await.map_err(map_rr_err)?;
-    let target = files
-        .iter()
-        .find(|f| f.id == id)
-        .with_context(|| format!("no item with id {id}"))?;
-    if target.hash.is_empty() {
-        bail!("server returned no hash for {id}; cannot delete");
-    }
-    client
-        .delete_many(std::slice::from_ref(&target.hash))
-        .await
-        .map_err(map_rr_err)?;
-    println!("{} Deleted '{}' ({})", "✓".green(), target.file_name, id);
+    // sync/v3 soft-delete works on any paired account; the legacy
+    // /doc/v2/files delete needs Connect-tier scopes and 401s otherwise.
+    let token = ensure_fresh_token().await?;
+    let client = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    let summary = client.delete_document(&id).await.map_err(map_rr_err)?;
+    println!("{} Deleted ({})", "✓".green(), summary);
     Ok(())
 }
 
