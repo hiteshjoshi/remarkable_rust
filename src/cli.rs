@@ -99,6 +99,16 @@ pub enum Command {
         parent: Option<String>,
     },
 
+    /// (hidden) Dump one raw blob of a cloud document by id — debugging aid
+    /// for comparing wire formats (e.g. `.content` of a native upload vs ours).
+    #[command(hide = true)]
+    Cat {
+        /// Document id from `rr ls`.
+        id: String,
+        /// Blob suffix: `content`, `metadata`, `pagedata`, or the file extension.
+        blob: String,
+    },
+
     /// (hidden) Legacy upload path that builds an EPUB locally and asks
     /// the reMarkable cloud to convert it to a native notebook. Kept for
     /// fallback only — the default `push` produces the same result
@@ -250,6 +260,7 @@ async fn dispatch(command: Command) -> Result<()> {
             rm,
         } => handle_push(file, title, device, parent, rm).await,
         Command::Send { file, title, parent } => handle_send(file, title, parent).await,
+        Command::Cat { id, blob } => handle_cat(id, blob).await,
         Command::ConnectPush {
             file,
             title,
@@ -450,6 +461,28 @@ async fn handle_send(
         result.doc_id,
         result.new_generation
     );
+    Ok(())
+}
+
+/// Debug: dump one blob of a cloud document (see `Command::Cat`).
+async fn handle_cat(id: String, blob: String) -> Result<()> {
+    let mut cfg = Config::load()?;
+    if !cfg.is_authenticated() {
+        bail!("not authenticated; run `rr auth` first");
+    }
+    if cfg.token_expired() && !cfg.refresh_token().await? {
+        bail!("token refresh failed; run `rr auth` to re-pair");
+    }
+    let token = cfg
+        .get_token()
+        .context("missing token after refresh")?
+        .to_owned();
+    let client = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    let bytes = client
+        .cat_blob(&id, &blob)
+        .await
+        .context("cat blob")?;
+    println!("{}", String::from_utf8_lossy(&bytes));
     Ok(())
 }
 

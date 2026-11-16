@@ -490,41 +490,64 @@ impl SyncClient {
     ) -> Result<UploadResult> {
         let doc_uuid = uuid::Uuid::new_v4().to_string();
         let page_uuid = uuid::Uuid::new_v4().to_string();
+        let author_uuid = uuid::Uuid::new_v4().to_string();
         let now_ms = chrono::Utc::now().timestamp_millis().to_string();
 
         let metadata = serde_json::json!({
             "parent": parent.unwrap_or(""),
             "pinned": false,
-            "lastModified": now_ms,
+            "new": false,
+            "source": "",
             "createdTime": now_ms,
+            "lastModified": now_ms,
             "type": "DocumentType",
             "visibleName": visible_name,
             "lastOpened": "0",
             "lastOpenedPage": 0,
         });
-        // Pages are unknown at upload time; the device repopulates the real
-        // page list on first open, so a single placeholder page keeps the
-        // schema valid (same trick the official upload path uses).
+        // Wire format observed from a real PDF uploaded through the official
+        // path (see `rr cat <id> content`): cPages + formatVersion 2, not the
+        // legacy `pages`/`redirectionPageMap` layout older clients emit — the
+        // web app's viewer fails to parse that and renders a 404.
+        // Page count is unknown at upload time; a single placeholder page
+        // keeps the schema valid and the device repopulates the real list
+        // on first open.
         let content = serde_json::json!({
             "coverPageNumber": -1,
+            "customZoomCenterX": 0,
+            "customZoomCenterY": 1080,
+            "customZoomOrientation": "portrait",
+            "customZoomPageHeight": 2160,
+            "customZoomPageWidth": 1620,
+            "customZoomScale": 1,
+            "cPages": {
+                "lastOpened": {"timestamp": "1:1", "value": ""},
+                "original": {"timestamp": "0:0", "value": 0},
+                "pages": [{
+                    "id": page_uuid,
+                    "idx": {"timestamp": "1:1", "value": ""},
+                    "modifed": now_ms,
+                    "redir": {"timestamp": "1:1", "value": 0},
+                    "scrollTime": {"timestamp": "1:1", "value": ""},
+                    "template": {"timestamp": "1:1", "value": "Blank"},
+                    "verticalScroll": {"timestamp": "1:1", "value": 0}
+                }],
+                "uuids": [{"first": author_uuid, "second": 1}]
+            },
             "documentMetadata": {},
             "extraMetadata": {},
-            "lineHeight": -1,
-            "margins": 125,
-            "orientation": "portrait",
             "fileType": file_type,
-            "formatVersion": 1,
-            "tags": [],
             "fontName": "",
-            "textAlignment": "justify",
-            "textScale": 1,
-            "zoomMode": "bestFit",
-            "originalPageCount": 1,
+            "formatVersion": 2,
+            "lineHeight": -1,
+            "orientation": "portrait",
             "pageCount": 1,
             "pageTags": [],
-            "pages": [page_uuid],
-            "redirectionPageMap": [0],
             "sizeInBytes": bytes.len().to_string(),
+            "tags": [],
+            "textAlignment": "justify",
+            "textScale": 1,
+            "zoomMode": "bestFit"
         });
 
         let files = vec![
@@ -538,7 +561,7 @@ impl SyncClient {
             },
             CloudFile {
                 cloud_name: format!("{doc_uuid}.pagedata"),
-                bytes: b"\n".to_vec(),
+                bytes: b"Blank\n".to_vec(),
             },
             CloudFile {
                 cloud_name: format!("{doc_uuid}.{file_type}"),
@@ -618,6 +641,29 @@ impl SyncClient {
         }
         unreachable!()
     }
+
+    /// Debug helper: fetch one of a document's blobs by suffix (e.g. `content`).
+    /// Suffix matches the blob's extension: `metadata`, `content`, `pagedata`,
+    /// or the raw file extension (`pdf` / `epub`).
+    pub async fn cat_blob(&self, doc_id: &str, suffix: &str) -> Result<Vec<u8>> {
+        let root = self.load_root().await?;
+        let entry = root
+            .entries
+            .iter()
+            .find(|e| e.id == doc_id)
+            .ok_or_else(|| Error::Other(format!("doc {doc_id} not in root index")))?;
+        let doc_index_body = self
+            .get_blob(&entry.hash, &format!("{doc_id}.docSchema"))
+            .await?;
+        let (_schema, entries) = parse_index(&doc_index_body)?;
+        let needle = format!(".{suffix}");
+        let target = entries
+            .iter()
+            .find(|e| e.id.ends_with(&needle) && !e.id.ends_with(".docSchema"))
+            .ok_or_else(|| Error::Other(format!("no .{suffix} blob in doc {doc_id}")))?;
+        self.get_blob(&target.hash, &target.id).await
+    }
+
 }
 
 /// What the root-update PUT returned.
