@@ -470,7 +470,129 @@ impl SyncClient {
             });
         }
 
-        // 3. Up to a few retries on the root-generation race.
+        // 3. Publish the doc index + swap the root pointer.
+        self.publish_document(&doc_uuid, doc_entries).await
+    }
+
+    /// Upload a raw PDF or EPUB as a reMarkable document, as-is — no
+    /// conversion, no Connect. Same wire layout the official web app
+    /// uploads: `<uuid>.metadata`, `<uuid>.content` (fileType set to the
+    /// extension), `<uuid>.pagedata`, and the file itself as
+    /// `<uuid>.<ext>`; all four listed in the doc index.
+    ///
+    /// `file_type` is the wire fileType and blob extension: "pdf" or "epub".
+    pub async fn upload_raw_document(
+        &self,
+        visible_name: &str,
+        file_type: &str,
+        bytes: &[u8],
+        parent: Option<&str>,
+    ) -> Result<UploadResult> {
+        let doc_uuid = uuid::Uuid::new_v4().to_string();
+        let page_uuid = uuid::Uuid::new_v4().to_string();
+        let author_uuid = uuid::Uuid::new_v4().to_string();
+        let now_ms = chrono::Utc::now().timestamp_millis().to_string();
+
+        let metadata = serde_json::json!({
+            "parent": parent.unwrap_or(""),
+            "pinned": false,
+            "new": false,
+            "source": "",
+            "createdTime": now_ms,
+            "lastModified": now_ms,
+            "type": "DocumentType",
+            "visibleName": visible_name,
+            "lastOpened": "0",
+            "lastOpenedPage": 0,
+        });
+        // Wire format observed from a real PDF uploaded through the official
+        // path (see `rr cat <id> content`): cPages + formatVersion 2, not the
+        // legacy `pages`/`redirectionPageMap` layout older clients emit — the
+        // web app's viewer fails to parse that and renders a 404.
+        // Page count is unknown at upload time; a single placeholder page
+        // keeps the schema valid and the device repopulates the real list
+        // on first open.
+        let content = serde_json::json!({
+            "coverPageNumber": -1,
+            "customZoomCenterX": 0,
+            "customZoomCenterY": 1080,
+            "customZoomOrientation": "portrait",
+            "customZoomPageHeight": 2160,
+            "customZoomPageWidth": 1620,
+            "customZoomScale": 1,
+            "cPages": {
+                "lastOpened": {"timestamp": "1:1", "value": ""},
+                "original": {"timestamp": "0:0", "value": 0},
+                "pages": [{
+                    "id": page_uuid,
+                    "idx": {"timestamp": "1:1", "value": ""},
+                    "modifed": now_ms,
+                    "redir": {"timestamp": "1:1", "value": 0},
+                    "scrollTime": {"timestamp": "1:1", "value": ""},
+                    "template": {"timestamp": "1:1", "value": "Blank"},
+                    "verticalScroll": {"timestamp": "1:1", "value": 0}
+                }],
+                "uuids": [{"first": author_uuid, "second": 1}]
+            },
+            "documentMetadata": {},
+            "extraMetadata": {},
+            "fileType": file_type,
+            "fontName": "",
+            "formatVersion": 2,
+            "lineHeight": -1,
+            "orientation": "portrait",
+            "pageCount": 1,
+            "pageTags": [],
+            "sizeInBytes": bytes.len().to_string(),
+            "tags": [],
+            "textAlignment": "justify",
+            "textScale": 1,
+            "zoomMode": "bestFit"
+        });
+
+        let files = vec![
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.metadata"),
+                bytes: metadata.to_string().into_bytes(),
+            },
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.content"),
+                bytes: content.to_string().into_bytes(),
+            },
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.pagedata"),
+                bytes: b"Blank\n".to_vec(),
+            },
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.{file_type}"),
+                bytes: bytes.to_vec(),
+            },
+        ];
+
+        let mut doc_entries: Vec<IndexEntry> = Vec::with_capacity(files.len());
+        for f in &files {
+            let hash = sha256_hex(&f.bytes);
+            self.put_blob(&hash, &f.bytes, &f.cloud_name).await?;
+            doc_entries.push(IndexEntry {
+                hash,
+                id: f.cloud_name.clone(),
+                subfiles: 0,
+                size: f.bytes.len() as u64,
+            });
+        }
+
+        self.publish_document(&doc_uuid, doc_entries).await
+    }
+
+    /// Publish a document's doc-index and swap the root pointer, retrying
+    /// on the root-generation race. Shared tail of every upload path.
+    async fn publish_document(
+        &self,
+        doc_uuid: &str,
+        doc_entries: Vec<IndexEntry>,
+    ) -> Result<UploadResult> {
+        let doc_uuid = doc_uuid.to_string();
+        // Up to a few retries on the root-generation race.
         const MAX_ATTEMPTS: usize = 3;
         for attempt in 0..MAX_ATTEMPTS {
             let root = self.load_root().await?;
@@ -519,6 +641,29 @@ impl SyncClient {
         }
         unreachable!()
     }
+
+    /// Debug helper: fetch one of a document's blobs by suffix (e.g. `content`).
+    /// Suffix matches the blob's extension: `metadata`, `content`, `pagedata`,
+    /// or the raw file extension (`pdf` / `epub`).
+    pub async fn cat_blob(&self, doc_id: &str, suffix: &str) -> Result<Vec<u8>> {
+        let root = self.load_root().await?;
+        let entry = root
+            .entries
+            .iter()
+            .find(|e| e.id == doc_id)
+            .ok_or_else(|| Error::Other(format!("doc {doc_id} not in root index")))?;
+        let doc_index_body = self
+            .get_blob(&entry.hash, &format!("{doc_id}.docSchema"))
+            .await?;
+        let (_schema, entries) = parse_index(&doc_index_body)?;
+        let needle = format!(".{suffix}");
+        let target = entries
+            .iter()
+            .find(|e| e.id.ends_with(&needle) && !e.id.ends_with(".docSchema"))
+            .ok_or_else(|| Error::Other(format!("no .{suffix} blob in doc {doc_id}")))?;
+        self.get_blob(&target.hash, &target.id).await
+    }
+
 }
 
 /// What the root-update PUT returned.

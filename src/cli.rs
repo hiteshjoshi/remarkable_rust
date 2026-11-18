@@ -83,6 +83,32 @@ pub enum Command {
         rm: Option<PathBuf>,
     },
 
+    /// Upload a raw PDF or EPUB as a reMarkable document, as-is — no
+    /// conversion, works on any reMarkable account, Connect not required.
+    Send {
+        /// Path to a PDF or EPUB file.
+        file: PathBuf,
+
+        /// Override the document title (otherwise from the filename).
+        #[arg(short, long)]
+        title: Option<String>,
+
+        /// Parent folder UUID; the document lands inside that folder
+        /// instead of at root. Get folder ids from `rr ls --folders`.
+        #[arg(short, long, value_name = "FOLDER_UUID")]
+        parent: Option<String>,
+    },
+
+    /// (hidden) Dump one raw blob of a cloud document by id — debugging aid
+    /// for comparing wire formats (e.g. `.content` of a native upload vs ours).
+    #[command(hide = true)]
+    Cat {
+        /// Document id from `rr ls`.
+        id: String,
+        /// Blob suffix: `content`, `metadata`, `pagedata`, or the file extension.
+        blob: String,
+    },
+
     /// (hidden) Legacy upload path that builds an EPUB locally and asks
     /// the reMarkable cloud to convert it to a native notebook. Kept for
     /// fallback only — the default `push` produces the same result
@@ -233,6 +259,8 @@ async fn dispatch(command: Command) -> Result<()> {
             parent,
             rm,
         } => handle_push(file, title, device, parent, rm).await,
+        Command::Send { file, title, parent } => handle_send(file, title, parent).await,
+        Command::Cat { id, blob } => handle_cat(id, blob).await,
         Command::ConnectPush {
             file,
             title,
@@ -358,6 +386,103 @@ async fn handle_push(
         result.doc_id,
         result.new_generation
     );
+    Ok(())
+}
+
+/// Upload a raw PDF/EPUB file as a reMarkable document. Shares the
+/// token-load/refresh path with `handle_push`; the wire work lives in
+/// `sync_v3::upload_raw_document`.
+async fn handle_send(
+    file: PathBuf,
+    custom_title: Option<String>,
+    parent: Option<String>,
+) -> Result<()> {
+    // Same up-front parent validation as `handle_push`: a non-UUID parent
+    // would silently orphan the document.
+    let parent = match parent.as_deref().map(str::trim) {
+        Some(p) => {
+            uuid::Uuid::parse_str(p).map_err(|_| {
+                anyhow::anyhow!(
+                    "--parent '{p}' is not a folder UUID; run `rr ls --folders` to find folder ids"
+                )
+            })?;
+            Some(p.to_owned())
+        }
+        None => None,
+    };
+
+    let mut cfg = Config::load()?;
+    if !cfg.is_authenticated() {
+        bail!("not authenticated; run `rr auth` first");
+    }
+    if cfg.token_expired() && !cfg.refresh_token().await? {
+        bail!("token refresh failed; run `rr auth` to re-pair");
+    }
+    let token = cfg
+        .get_token()
+        .context("missing token after refresh")?
+        .to_owned();
+
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let file_type = match ext.as_str() {
+        "pdf" => "pdf",
+        "epub" => "epub",
+        other => bail!(
+            "unsupported file type '.{other}' — send takes .pdf or .epub (use `rr push` for markdown)"
+        ),
+    };
+
+    let bytes = std::fs::read(&file).with_context(|| format!("read {}", file.display()))?;
+    let title = custom_title
+        .or_else(|| file.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+        .unwrap_or_else(|| "Untitled".into());
+
+    println!(
+        "Sending '{}' ({} bytes, fileType {file_type})...",
+        title,
+        bytes.len()
+    );
+    if let Some(p) = &parent {
+        println!("  parent folder: {p}");
+    }
+
+    let client = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    let result = client
+        .upload_raw_document(&title, file_type, &bytes, parent.as_deref())
+        .await
+        .context("upload raw document")?;
+    println!(
+        "{} doc {} (root gen {})",
+        "✓".green(),
+        result.doc_id,
+        result.new_generation
+    );
+    Ok(())
+}
+
+/// Debug: dump one blob of a cloud document (see `Command::Cat`).
+async fn handle_cat(id: String, blob: String) -> Result<()> {
+    let mut cfg = Config::load()?;
+    if !cfg.is_authenticated() {
+        bail!("not authenticated; run `rr auth` first");
+    }
+    if cfg.token_expired() && !cfg.refresh_token().await? {
+        bail!("token refresh failed; run `rr auth` to re-pair");
+    }
+    let token = cfg
+        .get_token()
+        .context("missing token after refresh")?
+        .to_owned();
+    let client = crate::sync_v3::SyncClient::new(token).context("build sync client")?;
+    let bytes = client
+        .cat_blob(&id, &blob)
+        .await
+        .context("cat blob")?;
+    println!("{}", String::from_utf8_lossy(&bytes));
     Ok(())
 }
 
