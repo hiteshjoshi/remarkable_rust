@@ -470,7 +470,106 @@ impl SyncClient {
             });
         }
 
-        // 3. Up to a few retries on the root-generation race.
+        // 3. Publish the doc index + swap the root pointer.
+        self.publish_document(&doc_uuid, doc_entries).await
+    }
+
+    /// Upload a raw PDF or EPUB as a reMarkable document, as-is — no
+    /// conversion, no Connect. Same wire layout the official web app
+    /// uploads: `<uuid>.metadata`, `<uuid>.content` (fileType set to the
+    /// extension), `<uuid>.pagedata`, and the file itself as
+    /// `<uuid>.<ext>`; all four listed in the doc index.
+    ///
+    /// `file_type` is the wire fileType and blob extension: "pdf" or "epub".
+    pub async fn upload_raw_document(
+        &self,
+        visible_name: &str,
+        file_type: &str,
+        bytes: &[u8],
+        parent: Option<&str>,
+    ) -> Result<UploadResult> {
+        let doc_uuid = uuid::Uuid::new_v4().to_string();
+        let page_uuid = uuid::Uuid::new_v4().to_string();
+        let now_ms = chrono::Utc::now().timestamp_millis().to_string();
+
+        let metadata = serde_json::json!({
+            "parent": parent.unwrap_or(""),
+            "pinned": false,
+            "lastModified": now_ms,
+            "createdTime": now_ms,
+            "type": "DocumentType",
+            "visibleName": visible_name,
+            "lastOpened": "0",
+            "lastOpenedPage": 0,
+        });
+        // Pages are unknown at upload time; the device repopulates the real
+        // page list on first open, so a single placeholder page keeps the
+        // schema valid (same trick the official upload path uses).
+        let content = serde_json::json!({
+            "coverPageNumber": -1,
+            "documentMetadata": {},
+            "extraMetadata": {},
+            "lineHeight": -1,
+            "margins": 125,
+            "orientation": "portrait",
+            "fileType": file_type,
+            "formatVersion": 1,
+            "tags": [],
+            "fontName": "",
+            "textAlignment": "justify",
+            "textScale": 1,
+            "zoomMode": "bestFit",
+            "originalPageCount": 1,
+            "pageCount": 1,
+            "pageTags": [],
+            "pages": [page_uuid],
+            "redirectionPageMap": [0],
+            "sizeInBytes": bytes.len().to_string(),
+        });
+
+        let files = vec![
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.metadata"),
+                bytes: metadata.to_string().into_bytes(),
+            },
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.content"),
+                bytes: content.to_string().into_bytes(),
+            },
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.pagedata"),
+                bytes: b"\n".to_vec(),
+            },
+            CloudFile {
+                cloud_name: format!("{doc_uuid}.{file_type}"),
+                bytes: bytes.to_vec(),
+            },
+        ];
+
+        let mut doc_entries: Vec<IndexEntry> = Vec::with_capacity(files.len());
+        for f in &files {
+            let hash = sha256_hex(&f.bytes);
+            self.put_blob(&hash, &f.bytes, &f.cloud_name).await?;
+            doc_entries.push(IndexEntry {
+                hash,
+                id: f.cloud_name.clone(),
+                subfiles: 0,
+                size: f.bytes.len() as u64,
+            });
+        }
+
+        self.publish_document(&doc_uuid, doc_entries).await
+    }
+
+    /// Publish a document's doc-index and swap the root pointer, retrying
+    /// on the root-generation race. Shared tail of every upload path.
+    async fn publish_document(
+        &self,
+        doc_uuid: &str,
+        doc_entries: Vec<IndexEntry>,
+    ) -> Result<UploadResult> {
+        let doc_uuid = doc_uuid.to_string();
+        // Up to a few retries on the root-generation race.
         const MAX_ATTEMPTS: usize = 3;
         for attempt in 0..MAX_ATTEMPTS {
             let root = self.load_root().await?;
